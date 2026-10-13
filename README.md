@@ -2,6 +2,8 @@
 
 面向学生的科研领域探索 MVP：输入领域 → 查找论文 → 提取前置领域与研究分支 → 展示知识地图 → 点击子领域继续探索。论文是领域节点下的证据与学习材料，图中的主要节点始终是领域。
 
+本项目按 [Apache License 2.0](LICENSE) 发布。
+
 Docker Compose 部署说明见 [DEPLOY.md](DEPLOY.md)；可将文中的部署指令直接交给自动部署器。
 
 魔搭单容器部署见 [ModelScope部署说明](deploy/modelscope.md)。参赛作品范围、演示路径与交付状态见 [参赛说明](docs/HACKATHON.md)。

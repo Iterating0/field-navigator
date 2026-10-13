@@ -26,9 +26,13 @@ Field Navigator帮助学生进入陌生科研领域：从一个明确的研究�
 
 天猫赛道初赛需要项目名称、评委能访问的GitHub仓库和魔搭创空间链接。项目名称使用Field Navigator科研领域导航器。代码发布使用干净的源码导出包，不推送原工作区的Git历史；本地配置、密钥、数据库和个人笔记不在公开包内。
 
+## 发布许可与魔搭状态
+
+参赛发布版采用 Apache License 2.0，官方许可证全文见仓库根目录 [LICENSE](../LICENSE)。公开魔搭创空间为 [Iteraring0/field-navigator](https://modelscope.cn/studios/Iteraring0/field-navigator)，代码上传、部署和线上验证仍待完成。
+
 魔搭适配见[部署说明](../deploy/modelscope.md)。根Dockerfile在一个容器中构建前端并运行FastAPI，监听7860端口。默认每个后台进程最多接受30次非缓存实时请求，同时处理最多2次；离线演示和有效缓存仍可用。该限制用于约束公开试用，不是每用户配额或计费保证。
 
-截至2026年10月13日，赛事报名已完成，[GitHub源码](https://github.com/Iterating0/field-navigator)已发布并核验；魔搭创空间仍待登录、部署和验证，初赛作品尚未正式提交。初赛提交截止为2026年10月18日17:00（北京时间）。
+截至2026年10月13日，赛事报名已完成，[GitHub源码](https://github.com/Iterating0/field-navigator)已发布并核验；公开魔搭创空间已创建，仍待上传代码、部署和验证，初赛作品尚未正式提交。初赛提交截止为2026年10月18日17:00（北京时间）。
 
 ## 最小演示顺序
 
