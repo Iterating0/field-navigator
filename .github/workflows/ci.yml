@@ -83,3 +83,6 @@ jobs:
 
       - name: Build application image
         run: docker build --file Dockerfile --tag field-navigator:ci .
+
+      - name: Build ModelScope bootstrap image
+        run: docker build --file deploy/modelscope-bootstrap/Dockerfile --tag field-navigator:modelscope deploy/modelscope-bootstrap
