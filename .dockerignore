@@ -1,0 +1,17 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.runtime
+.pytest_cache
+**/__pycache__
+**/*.py[cod]
+backend/.venv
+backend/data/*.sqlite3
+backend/data/*.sqlite3-*
+backend/data/*.db
+frontend/node_modules
+frontend/dist
+frontend/*.tsbuildinfo
+**/.DS_Store

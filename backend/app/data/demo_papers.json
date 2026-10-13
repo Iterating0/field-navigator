@@ -1,0 +1,181 @@
+[
+  {
+    "id": "10.1103/PhysRevLett.121.086803",
+    "doi": "10.1103/PhysRevLett.121.086803",
+    "url": "https://doi.org/10.1103/PhysRevLett.121.086803",
+    "title": "Edge States and Topological Invariants of Non-Hermitian Systems",
+    "authors": [
+      "Shunyu Yao",
+      "Zhong Wang"
+    ],
+    "year": 2018,
+    "citation_count": null,
+    "journal": "Physical Review Letters",
+    "abstract": null,
+    "referenced_works": [],
+    "source": "demo"
+  },
+  {
+    "id": "10.1103/PhysRevLett.121.026808",
+    "doi": "10.1103/PhysRevLett.121.026808",
+    "url": "https://doi.org/10.1103/PhysRevLett.121.026808",
+    "title": "Biorthogonal Bulk-Boundary Correspondence in Non-Hermitian Systems",
+    "authors": [
+      "Flore K. Kunst",
+      "Elisabet Edvardsson",
+      "Jan Carl Budich",
+      "Emil J. Bergholtz"
+    ],
+    "year": 2018,
+    "citation_count": null,
+    "journal": "Physical Review Letters",
+    "abstract": null,
+    "referenced_works": [],
+    "source": "demo"
+  },
+  {
+    "id": "10.1103/PhysRevLett.123.066404",
+    "doi": "10.1103/PhysRevLett.123.066404",
+    "url": "https://doi.org/10.1103/PhysRevLett.123.066404",
+    "title": "Non-Bloch Band Theory of Non-Hermitian Systems",
+    "authors": [
+      "Kazuki Yokomizo",
+      "Shuichi Murakami"
+    ],
+    "year": 2019,
+    "citation_count": null,
+    "journal": "Physical Review Letters",
+    "abstract": null,
+    "referenced_works": [],
+    "source": "demo"
+  },
+  {
+    "id": "10.1103/PhysRevLett.124.086801",
+    "doi": "10.1103/PhysRevLett.124.086801",
+    "url": "https://doi.org/10.1103/PhysRevLett.124.086801",
+    "title": "Topological Origin of Non-Hermitian Skin Effects",
+    "authors": [
+      "Nobuyuki Okuma",
+      "Kohei Kawabata",
+      "Ken Shiozaki",
+      "Masatoshi Sato"
+    ],
+    "year": 2020,
+    "citation_count": null,
+    "journal": "Physical Review Letters",
+    "abstract": null,
+    "referenced_works": [],
+    "source": "demo"
+  },
+  {
+    "id": "10.1103/PhysRevLett.125.126402",
+    "doi": "10.1103/PhysRevLett.125.126402",
+    "url": "https://doi.org/10.1103/PhysRevLett.125.126402",
+    "title": "Correspondence between Winding Numbers and Skin Modes in Non-Hermitian Systems",
+    "authors": [
+      "Kai Zhang",
+      "Zhesen Yang",
+      "Chen Fang"
+    ],
+    "year": 2020,
+    "citation_count": null,
+    "journal": "Physical Review Letters",
+    "abstract": null,
+    "referenced_works": [],
+    "source": "demo"
+  },
+  {
+    "id": "10.1038/s41567-020-0922-9",
+    "doi": "10.1038/s41567-020-0922-9",
+    "url": "https://doi.org/10.1038/s41567-020-0922-9",
+    "title": "Generalized bulk–boundary correspondence in non-Hermitian topolectrical circuits",
+    "authors": [
+      "T. Helbig",
+      "T. Hofmann",
+      "S. Imhof",
+      "M. Abdelghany",
+      "T. Kiessling",
+      "L. W. Molenkamp",
+      "C. H. Lee",
+      "A. Szameit",
+      "M. Greiter",
+      "R. Thomale"
+    ],
+    "year": 2020,
+    "citation_count": null,
+    "journal": "Nature Physics",
+    "abstract": null,
+    "referenced_works": [],
+    "source": "demo"
+  },
+  {
+    "id": "10.1126/science.aaz8727",
+    "doi": "10.1126/science.aaz8727",
+    "url": "https://doi.org/10.1126/science.aaz8727",
+    "title": "Topological funneling of light",
+    "authors": [
+      "Sebastian Weidemann",
+      "Mark Kremer",
+      "Tobias Helbig",
+      "Tobias Hofmann",
+      "Alexander Stegmaier",
+      "Martin Greiter",
+      "Ronny Thomale",
+      "Alexander Szameit"
+    ],
+    "year": 2020,
+    "citation_count": null,
+    "journal": "Science",
+    "abstract": null,
+    "referenced_works": [],
+    "source": "demo"
+  },
+  {
+    "id": "10.1038/s41467-022-30161-6",
+    "doi": "10.1038/s41467-022-30161-6",
+    "url": "https://doi.org/10.1038/s41467-022-30161-6",
+    "title": "Universal non-Hermitian skin effect in two and higher dimensions",
+    "authors": [
+      "Kai Zhang",
+      "Zhesen Yang",
+      "Chen Fang"
+    ],
+    "year": 2022,
+    "citation_count": null,
+    "journal": "Nature Communications",
+    "abstract": null,
+    "referenced_works": [],
+    "source": "demo"
+  },
+  {
+    "id": "10.1103/PhysRevLett.77.570",
+    "doi": "10.1103/PhysRevLett.77.570",
+    "url": "https://doi.org/10.1103/PhysRevLett.77.570",
+    "title": "Localization Transitions in Non-Hermitian Quantum Mechanics",
+    "authors": [
+      "Naomichi Hatano",
+      "David R. Nelson"
+    ],
+    "year": 1996,
+    "citation_count": null,
+    "journal": "Physical Review Letters",
+    "abstract": null,
+    "referenced_works": [],
+    "source": "demo"
+  },
+  {
+    "id": "arxiv:2404.04536",
+    "doi": null,
+    "url": "https://arxiv.org/abs/2404.04536",
+    "title": "Incoherent non-Hermitian skin effect in photonic quantum walks",
+    "authors": [
+      "Stefano Longhi"
+    ],
+    "year": 2024,
+    "citation_count": null,
+    "journal": "arXiv (preprint)",
+    "abstract": null,
+    "referenced_works": [],
+    "source": "demo"
+  }
+]

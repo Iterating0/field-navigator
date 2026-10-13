@@ -1,0 +1,64 @@
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    restart: unless-stopped
+    environment:
+      DATABASE_PATH: /app/backend/data/field_navigator.sqlite3
+      CACHE_TTL_HOURS: ${CACHE_TTL_HOURS:-168}
+      SEARCH_CACHE_TTL_HOURS: ${SEARCH_CACHE_TTL_HOURS:-24}
+      OPENALEX_API_KEY: ${OPENALEX_API_KEY:-}
+      OPENALEX_MAILTO: ${OPENALEX_MAILTO:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_RESPONSE_FORMAT: ${LLM_RESPONSE_FORMAT:-auto}
+      LLM_THINKING: ${LLM_THINKING:-auto}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-16384}
+      LLM_ANALYSIS_LIMIT: ${LLM_ANALYSIS_LIMIT:-0}
+      REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-45}
+      LLM_REQUEST_TIMEOUT_SECONDS: ${LLM_REQUEST_TIMEOUT_SECONDS:-180}
+      LIVE_REQUEST_BUDGET: ${LIVE_REQUEST_BUDGET:-0}
+      LIVE_MAX_CONCURRENCY: ${LIVE_MAX_CONCURRENCY:-0}
+      SEARCH_LIMIT: ${SEARCH_LIMIT:-40}
+      CORE_PAPER_LIMIT: ${CORE_PAPER_LIMIT:-8}
+      RANK_CITATION: ${RANK_CITATION:-0.20}
+      RANK_AGE_NORMALIZED: ${RANK_AGE_NORMALIZED:-0.15}
+      RANK_RELEVANCE: ${RANK_RELEVANCE:-0.30}
+      RANK_SHARED_REFERENCES: ${RANK_SHARED_REFERENCES:-0.10}
+      RANK_LLM_IMPORTANCE: ${RANK_LLM_IMPORTANCE:-0.25}
+    expose:
+      - "8000"
+    volumes:
+      - field_navigator_data:/app/backend/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FIELD_NAVIGATOR_BIND:-127.0.0.1}:${FIELD_NAVIGATOR_PORT:-8080}:80"
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  field_navigator_data:

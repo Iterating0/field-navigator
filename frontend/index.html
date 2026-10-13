@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#111923" />
+    <script>
+      // Apply the saved preference before rendering to avoid a bright flash.
+      let theme = "dark";
+      try {
+        if (localStorage.getItem("field-navigator-theme") === "light")
+          theme = "light";
+      } catch {}
+      document.documentElement.dataset.theme = theme;
+      document.querySelector('meta[name="theme-color"]').content =
+        theme === "dark" ? "#111923" : "#ffffff";
+    </script>
+    <title>Field Navigator · 领域探索</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
