@@ -49,4 +49,4 @@ Field Navigator帮助学生进入陌生科研领域：从一个明确的研究�
 
 真实OpenAlex与大模型链路完成了二维电子气分析：40篇候选、8篇核心论文、5个前置领域、7个研究分支、20篇关系证据论文，所有关系ID都对应论文元数据。本次完整请求约16.94秒；这是一次运行记录，尚未进行学术质量人工评测，不作为速度或准确率保证。
 
-ModelScope配置和本机HTTP检查已通过。Docker Desktop启动时出现推理服务套接字错误，因此真实镜像构建和云端部署尚未完成；没有重置Docker或删除数据。
+ModelScope配置和本机HTTP检查已通过。[GitHub Actions](https://github.com/Iterating0/field-navigator/actions/runs/38343337727)已完成后端测试、前端测试与生产构建，以及原应用和扁平上传包的Docker镜像构建。云端部署和运行验证仍待完成。本机Docker Desktop启动时出现推理服务套接字错误，没有重置Docker或删除数据。

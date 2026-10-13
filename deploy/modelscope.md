@@ -1,9 +1,13 @@
 # ModelScope Studio Docker 部署说明
 
 Field Navigator 的 ModelScope 适配使用 Docker 类型创空间。仓库根目录的
-`Dockerfile` 是唯一入口：构建阶段用 Node 22 编译 Vite 前端，运行阶段用
+`Dockerfile` 可直接构建完整源码：构建阶段用 Node 22 编译 Vite 前端，运行阶段用
 Python 3.12-slim 启动单个 FastAPI/uvicorn 进程。对外服务固定监听
 `0.0.0.0:7860`，这是 ModelScope Docker 创空间要求的端口。
+
+网页上传向导也可以使用 [四文件部署包](modelscope-bootstrap/README.md)。该包的
+`Dockerfile` 在构建时从公开GitHub仓库获取固定提交的源码，避免上传文件夹时
+丢失路径。四个文件须位于创空间根目录；应用源码和原Dockerfile仍在GitHub公开。
 
 ## 配置依据
 
