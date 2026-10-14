@@ -49,7 +49,7 @@ function FieldCard({ data }: NodeProps<GraphNode>) {
             ? "前置领域"
             : "研究分支"}
       </span>
-      <strong>{data.name}</strong>
+      <strong title={data.name}>{data.name}</strong>
       <div className="node-bottom">
         <span>
           {data.analyzed ? (
@@ -86,6 +86,7 @@ interface Props {
   showSubfields: boolean;
   minConfidence: number;
   depth: number;
+  maxRelations?: number;
   busy: boolean;
 }
 export function buildGraph({
@@ -97,6 +98,7 @@ export function buildGraph({
   showSubfields,
   minConfidence,
   depth,
+  maxRelations = 3,
   busy,
 }: Props) {
   const nodes: GraphNode[] = [],
@@ -165,7 +167,9 @@ export function buildGraph({
     if (!enabled) continue;
     const relations = (
       kind === "prerequisite" ? field.prerequisites : field.subfields
-    ).filter((r) => r.confidence >= minConfidence);
+    )
+      .filter((r) => r.confidence >= minConfidence)
+      .slice(0, maxRelations || undefined);
     const direction = kind === "prerequisite" ? -1 : 1;
     relations.forEach((r, i) => {
       add(
@@ -235,6 +239,7 @@ function GraphCanvas(props: Props) {
       props.showSubfields,
       props.minConfidence,
       props.depth,
+      props.maxRelations,
       props.busy,
       props.onExplore,
     ],
@@ -338,7 +343,9 @@ function GraphCanvas(props: Props) {
             : "滚轮滚动页面 · Ctrl + 滚轮缩放 · 拖动画布"}
         </span>
         <span>
-          {props.depth === 2 ? "二层视图 · 仅展开已分析分支" : "一层视图"}
+          {props.maxRelations === 0
+            ? "完整关系视图"
+            : `概览 · 每侧最多 ${props.maxRelations ?? 3} 个方向`}
         </span>
       </div>
     </div>

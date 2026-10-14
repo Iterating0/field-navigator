@@ -3,7 +3,8 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from app.models.schemas import FieldNode, field_id, normalize_field
+from pydantic import ValidationError
+from app.models.schemas import FieldNode, field_id, normalize_field, CURRENT_QUALITY_REVISION
 
 
 class FieldCache:
@@ -56,7 +57,13 @@ class FieldCache:
                              (key, time.time())).fetchone()
         if not row:
             return None
-        return FieldNode.model_validate_json(row[0]).model_copy(update={'cache_hit': True})
+        try:
+            node = FieldNode.model_validate_json(row[0])
+        except (ValidationError, ValueError, TypeError):
+            return None
+        if node.paper_source == 'openalex' and node.quality_revision < CURRENT_QUALITY_REVISION:
+            return None
+        return node.model_copy(update={'cache_hit': True})
 
     def save(self, key: str, node: FieldNode, ttl_seconds: float):
         # All related tables change in a single transaction; failed refreshes never replace a good result.
@@ -88,10 +95,21 @@ class FieldCache:
         with self.connect() as db:
             row = db.execute('SELECT payload FROM analysis_artifacts WHERE kind=? AND artifact_key=? AND expires_at>?',
                              (kind, key, time.time())).fetchone()
-        return json.loads(row[0]) if row else None
+        if not row:
+            return None
+        try:
+            envelope = json.loads(row[0])
+        except (ValueError, TypeError):
+            return None
+        if (not isinstance(envelope, dict)
+                or envelope.get('quality_revision') != CURRENT_QUALITY_REVISION
+                or 'value' not in envelope):
+            return None
+        return envelope['value']
 
     def save_artifact(self, kind: str, key: str, value, ttl_seconds: float):
+        envelope = {'quality_revision': CURRENT_QUALITY_REVISION, 'value': value}
         with self.connect() as db:
             db.execute('INSERT INTO analysis_artifacts VALUES (?, ?, ?, ?, ?) ON CONFLICT(kind, artifact_key) '
                        'DO UPDATE SET payload=excluded.payload, expires_at=excluded.expires_at, updated_at=excluded.updated_at',
-                       (kind, key, json.dumps(value, ensure_ascii=False), time.time() + ttl_seconds, time.time()))
+                       (kind, key, json.dumps(envelope, ensure_ascii=False), time.time() + ttl_seconds, time.time()))

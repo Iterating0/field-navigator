@@ -8,6 +8,7 @@ interface Props {
   setMode: (m: Mode) => void;
   busy: boolean;
   onSearch: () => void;
+  variant?: "compact" | "hero";
 }
 export function SearchBar({
   query,
@@ -16,6 +17,7 @@ export function SearchBar({
   setMode,
   busy,
   onSearch,
+  variant = "compact",
 }: Props) {
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -31,7 +33,7 @@ export function SearchBar({
   }, []);
   return (
     <form
-      className="search-bar"
+      className={`search-bar ${variant === "hero" ? "search-hero" : ""}`}
       onSubmit={(e) => {
         e.preventDefault();
         onSearch();
@@ -41,10 +43,14 @@ export function SearchBar({
       <input
         ref={input}
         aria-label="搜索科研领域"
-        placeholder="输入一个领域，发现它的知识地图…"
+        placeholder={
+          variant === "hero"
+            ? "例如：KTO 界面超导属于哪些研究方向？"
+            : "输入领域，或用中文描述研究问题…"
+        }
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        maxLength={180}
+        maxLength={1000}
         required
         minLength={2}
       />
@@ -55,9 +61,9 @@ export function SearchBar({
         disabled={busy}
         onChange={(e) => setMode(e.target.value as Mode)}
       >
-        <option value="auto">自动模式</option>
-        <option value="live">OpenAlex 实时</option>
-        <option value="demo">离线演示</option>
+        <option value="auto">自动检索</option>
+        <option value="live">实时检索</option>
+        <option value="demo">离线示例</option>
       </select>
       <button className="primary" disabled={busy || query.trim().length < 2}>
         {busy ? (
@@ -65,7 +71,7 @@ export function SearchBar({
         ) : (
           <ArrowUpRight size={17} />
         )}
-        <span>{busy ? "探索中" : "探索"}</span>
+        <span>{busy ? "识别中" : "开始探索"}</span>
       </button>
     </form>
   );

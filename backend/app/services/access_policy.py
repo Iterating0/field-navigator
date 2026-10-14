@@ -1,5 +1,6 @@
 """Bound uncached public explorations without charging offline or cached reads."""
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from app.models.schemas import normalize_field
@@ -15,13 +16,19 @@ class LiveRequestGate:
         self.lock = asyncio.Lock()
 
     @asynccontextmanager
-    async def admit(self, body, explorer):
+    async def admit(self, body, explorer,
+                    cache_probe: Callable[[], Awaitable[object | None]] | None = None):
         if body.mode == 'demo' or not (self.budget or self.max_concurrency):
             yield
             return
         if not body.refresh:
-            key = explorer.fingerprint + ':' + body.mode + ':' + normalize_field(body.query)
-            cached = await asyncio.to_thread(explorer.cache.get, key)
+            if cache_probe is not None:
+                cached = await cache_probe()
+            else:
+                key = (explorer.cache_key(body.query, body.mode, getattr(body, 'research_question', None))
+                       if hasattr(explorer, 'cache_key') else
+                       explorer.fingerprint + ':' + body.mode + ':' + normalize_field(body.query))
+                cached = await asyncio.to_thread(explorer.cache.get, key)
             if cached is not None:
                 yield
                 return

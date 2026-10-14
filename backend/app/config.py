@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     core_paper_limit: int = Field(default=8, ge=1, le=10)
     request_timeout_seconds: float = Field(default=45, gt=0, le=120)
     llm_request_timeout_seconds: float = Field(default=180, gt=0, le=240)
+    resolve_timeout_seconds: float = Field(default=30, gt=0, le=120)
+    resolve_probe_limit: int = Field(default=6, ge=1, le=20)
+    resolve_cache_ttl_hours: int = Field(default=24, ge=1)
     frontend_dist_path: str = ''
     # Optional limits for a single-process public preview; local use stays unlimited.
     live_request_budget: int = Field(default=0, ge=0)

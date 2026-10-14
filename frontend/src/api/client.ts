@@ -1,15 +1,63 @@
-import type { ExploreEvent, FieldNode, Mode } from "../types";
+import type { ExploreEvent, FieldNode, Mode, QueryResolution } from "../types";
+
+export async function resolveQuery(
+  query: string,
+  mode: Mode,
+  signal?: AbortSignal,
+): Promise<QueryResolution> {
+  const response = await fetch("/api/fields/resolve", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, mode }),
+    signal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(40_000)])
+      : AbortSignal.timeout(40_000),
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok)
+    throw new Error(
+      typeof body?.detail === "string"
+        ? body.detail
+        : "暂时无法识别研究方向，请重试或使用明确的领域名称。",
+    );
+  if (
+    !body ||
+    !["ready", "choose", "clarify"].includes(body.status) ||
+    !["llm", "alias", "direct"].includes(body.source) ||
+    !Array.isArray(body.candidates) ||
+    body.candidates.length > 3 ||
+    body.candidates.some(
+      (candidate: QueryResolution["candidates"][number]) =>
+        !candidate ||
+        typeof candidate.query !== "string" ||
+        candidate.query.length > 180 ||
+        typeof candidate.name !== "string" ||
+        !Array.isArray(candidate.evidence_papers),
+    )
+  )
+    throw new Error("研究方向数据不完整，请重试。");
+  return body as QueryResolution;
+}
+
 export async function exploreField(
   query: string,
   mode: Mode,
   refresh = false,
   onEvent?: (event: ExploreEvent) => void,
   signal?: AbortSignal,
+  researchQuestion?: string,
 ): Promise<FieldNode> {
   const response = await fetch("/api/fields/explore/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, mode, refresh }),
+    body: JSON.stringify({
+      query,
+      mode,
+      refresh,
+      ...(researchQuestion?.trim()
+        ? { research_question: researchQuestion.trim() }
+        : {}),
+    }),
     signal: signal
       ? AbortSignal.any([signal, AbortSignal.timeout(280_000)])
       : AbortSignal.timeout(280_000),

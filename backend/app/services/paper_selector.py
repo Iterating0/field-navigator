@@ -4,9 +4,11 @@ import re
 
 from app.models.schemas import Paper
 from app.services.paper_ranker import lexical_relevance, tokens
+from app.services.paper_quality import quality_filter_and_dedupe
 
 
 def select_analysis_papers(field: str, papers: list[Paper], limit: int = 0) -> list[Paper]:
+    papers = quality_filter_and_dedupe(papers)
     if not limit or len(papers) <= limit:
         return list(papers)
     selected = set(range(min(2, limit)))

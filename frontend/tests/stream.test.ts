@@ -44,3 +44,28 @@ test("premature EOF and provider errors never become successful results", async 
   );
   await assert.rejects(exploreField("Test", "auto"), /模型超时/);
 });
+
+test("exploration forwards the original research question", async (t) => {
+  let body: Record<string, unknown> | null = null;
+  t.mock.method(globalThis, "fetch", async (_input, init) => {
+    body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return new Response(
+      JSON.stringify({
+        type: "complete",
+        field: { name: "Canonical field", core_papers: [], phase: "complete" },
+      }) + "\n",
+    );
+  });
+  await exploreField(
+    "Canonical field",
+    "auto",
+    false,
+    undefined,
+    undefined,
+    "Which mechanism matters in human cells?",
+  );
+  assert.equal(
+    body?.research_question,
+    "Which mechanism matters in human cells?",
+  );
+});

@@ -13,8 +13,12 @@ class MockLLMProvider:
         ids = {p['id'] for p in payload['papers']}
         def relation(child: str, kind: str, n: int):
             child_entry = lookup(child)[1]
-            shared = [PAPERS[i].id for i in indexes if i in child_entry[3] and PAPERS[i].id in ids]
-            return {'name': child, 'reason': f'学习 {name} 的概念基础。' if kind == 'pre' else f'从 {name} 延伸到这一研究方向。',
+            # The child's primary bibliography comes first: an experimental
+            # branch should cite its platform papers, not whichever generic
+            # theory papers happened to lead the parent's list.
+            shared = [PAPERS[i].id for i in child_entry[3] if i in indexes and PAPERS[i].id in ids]
+            purpose = '用于补充前置概念：' if kind == 'pre' else '可以沿这个方向继续阅读：'
+            return {'name': child, 'reason': purpose + child_entry[0],
                     'confidence': round(.94 - n * .04, 2), 'evidence_paper_ids': shared[:2]}
         judgments = [{'paper_id': PAPERS[i].id, 'importance': max(.55, .97 - n * .035),
                       'relevance': max(.50, .99 - n * .045), 'reason': REASONS[i]}

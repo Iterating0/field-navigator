@@ -17,8 +17,67 @@ export function normalizeField(name: string) {
   return aliases[value] || value;
 }
 
-export const requestKey = (name: string, mode: Mode) =>
-  `${mode}:${normalizeField(name)}`;
+export function normalizeResearchQuestion(value?: string | null) {
+  if (typeof value !== "string") return "";
+  return value.normalize("NFKC").replace(/\s+/g, " ").trim().slice(0, 1000);
+}
+
+/**
+ * Keep the old key for fields without an original question. A question-aware
+ * key prevents two goals that resolve to the same canonical field from
+ * sharing a completed result or an in-flight request.
+ */
+export const requestKey = (
+  name: string,
+  mode: Mode,
+  researchQuestion?: string | null,
+) => {
+  const base = `${mode}:${normalizeField(name)}`;
+  const question = normalizeResearchQuestion(researchQuestion);
+  return question ? `${base}:q:${encodeURIComponent(question)}` : base;
+};
+
+export type TrailContexts = Record<string, string>;
+
+/**
+ * Update a breadcrumb path while keeping the original-question context tied
+ * to its path position. Child fields intentionally receive no inherited
+ * question; returning to a root uses the context saved at that position.
+ */
+export function nextTrailState(
+  trail: readonly string[],
+  contexts: TrailContexts,
+  resultName: string,
+  researchQuestion?: string | null,
+  resetPath = false,
+): { trail: string[]; contexts: TrailContexts } {
+  const normalizedQuestion = normalizeResearchQuestion(researchQuestion);
+  const existingIndex = resetPath
+    ? -1
+    : [...trail]
+        .map((name) => normalizeField(name))
+        .lastIndexOf(normalizeField(resultName));
+  const nextTrail =
+    resetPath || existingIndex < 0
+      ? resetPath
+        ? [resultName]
+        : [...trail, resultName]
+      : trail.slice(0, existingIndex + 1);
+  const resultIndex = resetPath
+    ? 0
+    : existingIndex < 0
+      ? nextTrail.length - 1
+      : existingIndex;
+  const nextContexts: TrailContexts = {};
+  for (const [index, question] of Object.entries(contexts)) {
+    if (Number(index) < nextTrail.length) nextContexts[index] = question;
+  }
+  if (normalizedQuestion)
+    nextContexts[String(resultIndex)] = normalizedQuestion;
+  else delete nextContexts[String(resultIndex)];
+  return { trail: nextTrail, contexts: nextContexts };
+}
+
 type Listener = (event: ExploreEvent) => void;
 type FetchField = (
   name: string,
@@ -26,6 +85,7 @@ type FetchField = (
   refresh: boolean,
   listener: Listener,
   signal: AbortSignal,
+  researchQuestion?: string,
 ) => Promise<FieldNode>;
 type Job = {
   controller: AbortController;
@@ -54,10 +114,19 @@ export class ExplorationRequests {
     return this.jobs.has(key);
   }
   cancel(key: string) {
-    this.jobs.get(key)?.controller.abort();
+    const job = this.jobs.get(key);
+    if (!job) return;
+    // Remove the aborted job before signalling it so an immediate retry can
+    // create a fresh request. The old promise's finally block is identity
+    // guarded and therefore cannot delete the replacement job.
+    this.jobs.delete(key);
+    job.controller.abort();
   }
   dispose() {
-    for (const job of this.jobs.values()) job.controller.abort();
+    const jobs = [...this.jobs.values()];
+    this.jobs.clear();
+    for (const job of jobs) job.controller.abort();
+    this.cache.clear();
   }
 
   async explore(
@@ -65,8 +134,10 @@ export class ExplorationRequests {
     mode: Mode,
     refresh: boolean,
     listener: Listener,
+    researchQuestion?: string,
   ): Promise<FieldNode> {
-    const key = requestKey(name, mode);
+    const normalizedQuestion = normalizeResearchQuestion(researchQuestion);
+    const key = requestKey(name, mode, normalizedQuestion);
     const cached = this.cache.get(key);
     if (cached && !refresh) return { ...cached, cache_hit: true };
     const existing = this.jobs.get(key);
@@ -92,18 +163,44 @@ export class ExplorationRequests {
           mode,
           refresh,
           (event) => {
-            job.latest = event;
-            for (const fn of job.listeners) fn(event);
+            const contextualEvent =
+              normalizedQuestion &&
+              (event.type === "partial" || event.type === "complete") &&
+              !normalizeResearchQuestion(event.field.research_question)
+                ? {
+                    ...event,
+                    field: {
+                      ...event.field,
+                      research_question: normalizedQuestion,
+                    },
+                  }
+                : event;
+            job.latest = contextualEvent;
+            for (const fn of job.listeners) fn(contextualEvent);
           },
           job.controller.signal,
+          normalizedQuestion || undefined,
         ),
       )
       .then((result) => {
         if (job.controller.signal.aborted)
           throw new DOMException("Cancelled", "AbortError");
-        this.cache.set(key, result);
-        this.cache.set(requestKey(result.name, mode), result);
-        return result;
+        // A papers/map terminal response is useful to the current caller, but
+        // it is not a reusable field snapshot. Only the complete phase may
+        // become a cache hit on a later exploration.
+        const contextualResult =
+          normalizedQuestion &&
+          !normalizeResearchQuestion(result.research_question)
+            ? { ...result, research_question: normalizedQuestion }
+            : result;
+        if (contextualResult.phase === "complete") {
+          this.cache.set(key, contextualResult);
+          this.cache.set(
+            requestKey(contextualResult.name, mode, normalizedQuestion),
+            contextualResult,
+          );
+        }
+        return contextualResult;
       })
       .finally(() => {
         if (this.jobs.get(key) === job) this.jobs.delete(key);

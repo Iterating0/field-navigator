@@ -1,12 +1,166 @@
 import json
 import logging
+import re
 import time
+from copy import deepcopy
 from typing import Any
 import httpx
 from app.config import Settings
 from app.providers.base import ProviderError
 
 logger = logging.getLogger(__name__)
+
+
+_JSON_FENCE_RE = re.compile(r'\A```json\r?\n(?P<body>.*)\r?\n```\Z', re.DOTALL)
+_JSON_SIMPLE_ESCAPES = frozenset('"\\/bfnrt')
+_JSON_HEX_DIGITS = frozenset('0123456789abcdefABCDEF')
+
+
+def _unwrap_json_fence(content: str) -> str:
+    """Remove one strict, whole-response ``json`` fence around an object."""
+    candidate = content.strip()
+    match = _JSON_FENCE_RE.fullmatch(candidate)
+    if not match:
+        return content
+    body = match.group('body').strip()
+    # The fence is a transport convenience only.  Do not turn fenced arrays,
+    # prose, or several JSON values into an accepted response.
+    if not (body.startswith('{') and body.endswith('}')):
+        return content
+    return body
+
+
+def _recoverable_json_error(error: json.JSONDecodeError) -> bool:
+    """Whether the decoder identified one of the narrowly repairable errors."""
+    return error.msg in {
+        r'Invalid \escape',
+        r'Invalid \uXXXX escape',
+        'Invalid control character at',
+    }
+
+
+def _escape_raw_control(character: str) -> str:
+    """Encode one raw JSON string control character without changing its value."""
+    named = {'\b': r'\b', '\t': r'\t', '\n': r'\n', '\f': r'\f', '\r': r'\r'}
+    return named.get(character, f'\\u{ord(character):04x}')
+
+
+def _repair_json_string_literals(content: str) -> str:
+    """Repair only invalid escapes and raw controls while scanning JSON strings.
+
+    This deliberately does not balance quotes/brackets, discard trailing text,
+    or extract one value from a larger response.  Valid JSON escapes are copied
+    byte-for-byte so valid Unicode and existing string semantics are untouched.
+    """
+    repaired: list[str] = []
+    in_string = False
+    index = 0
+    while index < len(content):
+        character = content[index]
+        if not in_string:
+            repaired.append(character)
+            if character == '"':
+                in_string = True
+            index += 1
+            continue
+
+        if character == '"':
+            repaired.append(character)
+            in_string = False
+            index += 1
+            continue
+
+        if character == '\\':
+            next_index = index + 1
+            if next_index >= len(content):
+                # Keep the response invalid if the string has no terminating
+                # quote; this branch only makes a possible escaped slash safe.
+                repaired.append('\\\\')
+                index = next_index
+                continue
+            escaped = content[next_index]
+            if escaped in _JSON_SIMPLE_ESCAPES:
+                repaired.extend((character, escaped))
+                index += 2
+                continue
+            if escaped == 'u' and next_index + 4 < len(content):
+                digits = content[next_index + 1:next_index + 5]
+                if len(digits) == 4 and all(digit in _JSON_HEX_DIGITS for digit in digits):
+                    repaired.extend((character, escaped, digits))
+                    index += 6
+                    continue
+            # An invalid slash is represented as a literal slash in the JSON
+            # string.  Re-process the following character so it keeps its
+            # normal string meaning (including a future raw control character).
+            repaired.append('\\\\')
+            index += 1
+            continue
+
+        if ord(character) < 0x20:
+            repaired.append(_escape_raw_control(character))
+        else:
+            repaired.append(character)
+        index += 1
+    return ''.join(repaired)
+
+
+def _parse_response_json(content: Any) -> dict[str, Any]:
+    """Parse one model response, with narrowly scoped compatibility repair."""
+    if not isinstance(content, str):
+        raise TypeError('Expected JSON text')
+    candidate = _unwrap_json_fence(content)
+    try:
+        result = json.loads(candidate)
+    except json.JSONDecodeError as original_error:
+        if not _recoverable_json_error(original_error):
+            raise
+        repaired = _repair_json_string_literals(candidate)
+        if repaired == candidate:
+            raise
+        result = json.loads(repaired)
+    if not isinstance(result, dict):
+        raise ValueError('Expected an object')
+    return result
+
+
+def strictify_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Return an OpenAI strict-compatible copy of a Pydantic JSON schema.
+
+    Strict structured outputs require every object property to be listed in
+    ``required`` and reject object fields that allow additional properties.
+    Pydantic expresses fields with defaults as optional, so nullable fields
+    must remain nullable while their defaults are removed.  Walk every nested
+    schema location (including ``$defs``, ``anyOf`` and array items) without
+    changing the caller's schema.
+    """
+    normalized = deepcopy(schema)
+
+    def visit(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+            return
+        if not isinstance(node, dict):
+            return
+
+        # Defaults make a property optional to strict structured-output
+        # validators.  The field's default is still applied by Pydantic when
+        # parsing the model response after generation.
+        node.pop('default', None)
+        for value in node.values():
+            visit(value)
+
+        properties = node.get('properties')
+        is_object = node.get('type') == 'object' or isinstance(properties, dict)
+        if not is_object:
+            return
+        if not isinstance(properties, dict):
+            properties = {}
+        node['required'] = list(properties)
+        node['additionalProperties'] = False
+
+    visit(normalized)
+    return normalized
 
 
 def schema_format_unavailable(response: httpx.Response) -> bool:
@@ -19,11 +173,31 @@ def schema_format_unavailable(response: httpx.Response) -> bool:
             return False
         message = str(error.get('message', '')).lower()
         param = str(error.get('param', '')).lower()
+        code = str(error.get('code', '')).lower()
     except (ValueError, AttributeError):
         return False
-    # Invalid schema contents must remain visible instead of weakening the request.
-    if ('invalid schema' in message or 'schema for response_format' in message
-            or param.startswith('response_format.json_schema.schema')):
+
+    # Invalid schema contents must remain visible instead of weakening the
+    # request.  Do not treat ``json_schema`` itself as a schema error: many
+    # providers prefix a model-capability rejection with "Invalid parameter",
+    # for example ``response_format json_schema is not supported with this
+    # model``.  That message describes the requested format, not the schema
+    # contents.
+    invalid_schema = (
+        code in {'invalid_schema', 'schema_error', 'schema_validation_error'}
+        or param.startswith('response_format.json_schema.schema')
+        or re.search(
+            r'(?:\binvalid|\bmalformed|\bnot\s+valid)\s+'
+            r'(?:json[ _]?schema|schema)\b'
+            r'|\bschema\s+(?:is|was|has been)\s+'
+            r'(?:invalid|malformed|not\s+valid)\b'
+            r'|\bschema\s+for\s+response_format\b'
+            r'|\b(?:unsupported|unknown|unexpected)\s+'
+            r'(?:schema\s+)?(?:keyword|property|field|type)\b',
+            message,
+        ) is not None
+    )
+    if invalid_schema:
         return False
     mentions_format = any(value in message or value in param
                           for value in ('response_format', 'json_schema'))
@@ -45,12 +219,13 @@ class CompatibleLLMProvider:
         mode = self.settings.llm_response_format
         if mode not in ('auto', 'json_schema', 'json_object'):
             raise ProviderError('LLM_RESPONSE_FORMAT 必须为 auto、json_schema 或 json_object。', 503)
+        strict_schema = strictify_json_schema(schema)
         response_format: dict[str, Any] = {'type': 'json_object'}
         if mode == 'json_schema' or (mode == 'auto' and not self._schema_unavailable):
             response_format = {'type': 'json_schema', 'json_schema': {
-                'name': 'field_analysis', 'strict': True, 'schema': schema}}
+                'name': 'field_analysis', 'strict': True, 'schema': strict_schema}}
         body = {'model': self.settings.llm_model, 'response_format': response_format,
-                'messages': [{'role': 'system', 'content': system + '\nJSON schema:\n' + json.dumps(schema)},
+                'messages': [{'role': 'system', 'content': system + '\nJSON schema:\n' + json.dumps(strict_schema)},
                              {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}]}
         body.update(self.settings.thinking_options)
         body['max_tokens'] = self.settings.llm_max_tokens
@@ -79,10 +254,14 @@ class CompatibleLLMProvider:
                 raise ProviderError('模型输出达到长度预算，分析未保存。请减少候选论文、降低思考强度或提高 LLM_MAX_TOKENS。')
             if choice.get('finish_reason') != 'stop' or choice['message'].get('refusal'):
                 raise ProviderError('模型未完成结构化分析或拒绝了请求。请重试或更换模型。')
-            result = json.loads(choice['message']['content'])
-            if not isinstance(result, dict):
-                raise ValueError('Expected an object')
-            return result
+            content = choice['message']['content']
+            try:
+                return _parse_response_json(content)
+            except json.JSONDecodeError as exc:
+                logger.error('llm_json_parse_error type=%s line=%s col=%s len=%s',
+                             type(exc).__name__, exc.lineno, exc.colno,
+                             len(content) if isinstance(content, str) else 0)
+                raise
         except httpx.TimeoutException as exc:
             raise ProviderError('LLM 分析超时，请重试。', 504) from exc
         except httpx.HTTPStatusError as exc:

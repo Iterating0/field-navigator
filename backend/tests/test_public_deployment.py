@@ -56,8 +56,11 @@ def test_exhausted_live_budget_preserves_cached_and_offline_exploration(tmp_path
         papers = Papers()
         client.app.state.explorer.papers = papers
         body = {'query': 'NHSE', 'mode': 'live'}
-        assert client.post('/api/fields/explore', json=body).status_code == 200
-        assert client.post('/api/fields/explore', json=body).json()['cache_hit']
+        first = client.post('/api/fields/explore', json=body)
+        assert first.status_code == 200
+        assert first.json()['phase'] == 'papers'
+        assert first.json()['analysis_source'] == 'pending'
+        assert client.post('/api/fields/explore', json=body).status_code == 429
         denied = client.post('/api/fields/explore', json={**body, 'refresh': True})
         assert denied.status_code == 429
         assert papers.calls == 1

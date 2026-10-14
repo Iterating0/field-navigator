@@ -23,7 +23,8 @@ class Papers:
 
 
 def make_explorer(tmp_path, decomposer):
-    config = Settings(_env_file=None, llm_api_key='test', database_path=str(tmp_path / 'cache.db'))
+    config = Settings(_env_file=None, llm_api_key='test', llm_model='test-model',
+                      database_path=str(tmp_path / 'cache.db'))
     return FieldExplorer(config, Papers(), decomposer, PaperRanker(config.rank_weights), FieldCache(config.db_path))
 
 
