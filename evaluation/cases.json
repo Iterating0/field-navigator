@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "purpose": "Field Navigator recommendation-quality benchmark for six bounded research questions.",
+  "source_policy": "Fixtures contain only public questions, target branches, and factual paper title/identifier/primary-source metadata. They are anchors for retrieval and ranking checks, not a claim that the listed papers exhaust a field.",
+  "runtime_policy": {
+    "parallelism": 1,
+    "max_seconds_per_case": 240,
+    "automatic_retries": 0
+  },
+  "cases": [
+    {
+      "id": "ktao3-interface-superconductivity",
+      "canonical_query": "KTaO3 interface superconductivity",
+      "research_question": "How do orientation, electrostatic control, disorder, dimensionality and interface chemistry govern superconductivity in KTaO3-based two-dimensional electron gases?",
+      "target_branches": [
+        {"id": "orientation_and_interface", "label": "orientation and interface realizations"},
+        {"id": "electrostatic_control_and_disorder", "label": "gate, carrier density, disorder and confinement"},
+        {"id": "dimensionality_and_phase_coherence", "label": "two-dimensionality, BKT and phase coherence"},
+        {"id": "pairing_mechanism", "label": "experimentally constrained pairing mechanisms"},
+        {"id": "interface_chemistry", "label": "interface chemistry tied to the superconducting 2DEG"}
+      ],
+      "anchors": [
+        {"id": "ktao3-biscaras-2021", "title": "Two-dimensional superconductivity and anisotropic transport at KTaO3 (111) interfaces", "year": 2021, "doi": "10.1126/science.aba5511", "arxiv_id": "2004.07416", "primary_source_url": "https://doi.org/10.1126/science.aba5511", "branch_ids": ["orientation_and_interface", "dimensionality_and_phase_coherence"]},
+        {"id": "ktao3-li-2021", "title": "Electric field control of superconductivity at the LaAlO3/KTaO3(111) interface", "year": 2021, "doi": "10.1126/science.abb3848", "arxiv_id": "2009.05896", "primary_source_url": "https://doi.org/10.1126/science.abb3848", "branch_ids": ["electrostatic_control_and_disorder"]},
+        {"id": "ktao3-faccio-2021", "title": "Two-Dimensional Superconductivity at the LaAlO3/KTaO3(110) Heterointerface", "year": 2021, "doi": "10.1103/PhysRevLett.126.026802", "arxiv_id": "2011.08526", "primary_source_url": "https://doi.org/10.1103/PhysRevLett.126.026802", "branch_ids": ["orientation_and_interface", "dimensionality_and_phase_coherence"]},
+        {"id": "ktao3-pourret-2023", "title": "Tunable superconductivity and its origin at KTaO3 interfaces", "year": 2023, "doi": "10.1038/s41467-023-36309-2", "arxiv_id": "2203.05867", "primary_source_url": "https://doi.org/10.1038/s41467-023-36309-2", "branch_ids": ["orientation_and_interface", "pairing_mechanism"]},
+        {"id": "ktao3-biscaras-2022", "title": "Superfluid stiffness of a KTaO3-based two-dimensional electron gas", "year": 2022, "doi": "10.1038/s41467-022-32242-y", "arxiv_id": "2204.09094", "primary_source_url": "https://doi.org/10.1038/s41467-022-32242-y", "branch_ids": ["dimensionality_and_phase_coherence"]}
+      ]
+    },
+    {
+      "id": "one-dimensional-nhse",
+      "canonical_query": "non-Hermitian skin effect bulk boundary correspondence",
+      "research_question": "How should a one-dimensional nonreciprocal chain be analyzed through PBC/OBC spectra, boundary accumulation, generalized Brillouin zone and biorthogonal bulk-boundary correspondence, with an experimental diagnostic?",
+      "target_branches": [
+        {"id": "hatano_nelson_model", "label": "minimal asymmetric-hopping or Hatano-Nelson model"},
+        {"id": "pbc_obc_sensitivity", "label": "PBC/OBC spectral and eigenvector sensitivity"},
+        {"id": "non_bloch_topology", "label": "generalized Brillouin zone and non-Bloch invariant"},
+        {"id": "biorthogonal_correspondence", "label": "left/right eigenvectors and biorthogonal correspondence"},
+        {"id": "experimental_diagnostics", "label": "circuit or other primary experimental observable"}
+      ],
+      "anchors": [
+        {"id": "nhse-hatano-1996", "title": "Localization Transitions in Non-Hermitian Quantum Mechanics", "year": 1996, "doi": "10.1103/PhysRevLett.77.570", "arxiv_id": "cond-mat/9603165", "primary_source_url": "https://doi.org/10.1103/PhysRevLett.77.570", "branch_ids": ["hatano_nelson_model"]},
+        {"id": "nhse-yao-2018", "title": "Edge States and Topological Invariants of Non-Hermitian Systems", "year": 2018, "doi": "10.1103/PhysRevLett.121.086803", "arxiv_id": "1803.01876", "primary_source_url": "https://doi.org/10.1103/PhysRevLett.121.086803", "branch_ids": ["pbc_obc_sensitivity", "non_bloch_topology"]},
+        {"id": "nhse-kunst-2018", "title": "Biorthogonal Bulk-Boundary Correspondence in Non-Hermitian Systems", "year": 2018, "doi": "10.1103/PhysRevLett.121.026808", "arxiv_id": "1805.06492", "primary_source_url": "https://doi.org/10.1103/PhysRevLett.121.026808", "branch_ids": ["biorthogonal_correspondence"]},
+        {"id": "nhse-li-2020", "title": "Generalized bulk–boundary correspondence in non-Hermitian topolectrical circuits", "year": 2020, "doi": "10.1038/s41567-020-0922-9", "primary_source_url": "https://doi.org/10.1038/s41567-020-0922-9", "branch_ids": ["experimental_diagnostics", "non_bloch_topology"]}
+      ]
+    },
+    {
+      "id": "magic-angle-tbg-superconductivity",
+      "canonical_query": "magic angle twisted bilayer graphene superconductivity",
+      "research_question": "What is the evidence chain from magic-angle moire bands to integer-filling correlated states and gate-tuned superconducting domes in twisted bilayer graphene, and which controls distinguish the mechanisms?",
+      "target_branches": [
+        {"id": "continuum_moire_bands", "label": "continuum moire bands and flat-band formation"},
+        {"id": "correlated_integer_fillings", "label": "correlated insulating states at integer fillings"},
+        {"id": "superconducting_domes", "label": "gate-tuned superconducting domes and transport evidence"},
+        {"id": "tuning_and_uniformity", "label": "twist angle, pressure, displacement field, screening and uniformity"},
+        {"id": "order_parameter_and_mechanism", "label": "order-parameter evidence and pairing interpretation"}
+      ],
+      "anchors": [
+        {"id": "tbg-bistritzer-2011", "title": "Moiré bands in twisted double-layer graphene", "year": 2011, "doi": "10.1073/pnas.1108174108", "arxiv_id": "1009.4203", "primary_source_url": "https://doi.org/10.1073/pnas.1108174108", "branch_ids": ["continuum_moire_bands"]},
+        {"id": "tbg-cao-2018-insulator", "title": "Correlated insulator behaviour at half-filling in magic-angle graphene superlattices", "year": 2018, "doi": "10.1038/nature26154", "primary_source_url": "https://doi.org/10.1038/nature26154", "branch_ids": ["correlated_integer_fillings"]},
+        {"id": "tbg-cao-2018-superconductivity", "title": "Unconventional superconductivity in magic-angle graphene superlattices", "year": 2018, "doi": "10.1038/nature26160", "primary_source_url": "https://doi.org/10.1038/nature26160", "branch_ids": ["superconducting_domes"]},
+        {"id": "tbg-yankowitz-2019", "title": "Tuning superconductivity in twisted bilayer graphene", "year": 2019, "doi": "10.1126/science.aav1910", "arxiv_id": "1808.07865", "primary_source_url": "https://doi.org/10.1126/science.aav1910", "branch_ids": ["superconducting_domes", "tuning_and_uniformity"]},
+        {"id": "tbg-kerelsky-2019", "title": "Superconductors, orbital magnets and correlated states in magic-angle bilayer graphene", "year": 2019, "doi": "10.1038/s41586-019-1695-0", "primary_source_url": "https://doi.org/10.1038/s41586-019-1695-0", "branch_ids": ["order_parameter_and_mechanism"]}
+      ]
+    },
+    {
+      "id": "psc-stability",
+      "canonical_query": "perovskite solar cell stability degradation",
+      "research_question": "Which material mechanisms, interfaces and operation protocols govern metal-halide perovskite solar-cell degradation under coupled light, heat, oxygen and moisture stress?",
+      "target_branches": [
+        {"id": "light_halide_migration", "label": "light-induced halide migration and mixed-halide phase separation"},
+        {"id": "intrinsic_thermal_degradation", "label": "intrinsic thermal instability and decomposition"},
+        {"id": "oxygen_photooxidation", "label": "light, oxygen and moisture driven chemical degradation"},
+        {"id": "device_interfaces_and_protocols", "label": "interfaces, contact layers and operational stress protocols"}
+      ],
+      "anchors": [
+        {"id": "psc-hoke-2015", "title": "Reversible photo-induced trap formation in mixed-halide hybrid perovskites for photovoltaics", "year": 2015, "doi": "10.1039/C4SC03141E", "primary_source_url": "https://pubs.rsc.org/en/content/articlehtml/2015/sc/c4sc03141e", "branch_ids": ["light_halide_migration"]},
+        {"id": "psc-conings-2015", "title": "Intrinsic Thermal Instability of Methylammonium Lead Trihalide Perovskite", "year": 2015, "doi": "10.1002/aenm.201500477", "primary_source_url": "https://advanced.onlinelibrary.wiley.com/doi/10.1002/aenm.201500477", "branch_ids": ["intrinsic_thermal_degradation"]},
+        {"id": "psc-aristidou-2015", "title": "The Role of Oxygen in the Degradation of Methylammonium Lead Trihalide Perovskite Photoactive Layers", "year": 2015, "doi": "10.1002/anie.201503153", "primary_source_url": "https://onlinelibrary.wiley.com/doi/10.1002/anie.201503153", "branch_ids": ["oxygen_photooxidation"]},
+        {"id": "psc-domanski-2018", "title": "Systematic investigation of the impact of operation conditions on the degradation behaviour of perovskite solar cells", "year": 2018, "doi": "10.1038/s41560-017-0060-5", "primary_source_url": "https://www.nature.com/articles/s41560-017-0060-5", "branch_ids": ["device_interfaces_and_protocols"]},
+        {"id": "psc-christians-2018", "title": "Tailored interfaces of unencapsulated perovskite solar cells for >1,000 hour operational stability", "year": 2018, "doi": "10.1038/s41560-017-0067-y", "primary_source_url": "https://www.nature.com/articles/s41560-017-0067-y", "branch_ids": ["device_interfaces_and_protocols"]}
+      ]
+    },
+    {
+      "id": "prime-editing-efficiency",
+      "canonical_query": "prime editing efficiency",
+      "research_question": "Which pegRNA, prime-editor, DNA-repair, locus/cell-context and delivery factors control prime-editing efficiency and intended-edit purity for precise mammalian genome edits?",
+      "target_branches": [
+        {"id": "foundational_editor_and_edit_space", "label": "prime-editor architecture, pegRNA mechanism and edit space"},
+        {"id": "pegrna_design_and_stability", "label": "pegRNA PBS, RTT and 3-prime stability/design"},
+        {"id": "editor_and_mismatch_repair", "label": "editor engineering and mismatch-repair determinants"},
+        {"id": "cell_context_and_large_edit_scope", "label": "cell/locus context, RNA stability and large-edit extensions"}
+      ],
+      "anchors": [
+        {"id": "pe-anzalone-2019", "title": "Search-and-replace genome editing without double-strand breaks or donor DNA", "year": 2019, "doi": "10.1038/s41586-019-1711-4", "primary_source_url": "https://www.nature.com/articles/s41586-019-1711-4", "branch_ids": ["foundational_editor_and_edit_space"]},
+        {"id": "pe-chen-2021", "title": "Enhanced prime editing systems by manipulating cellular determinants of editing outcomes", "year": 2021, "doi": "10.1016/j.cell.2021.09.018", "primary_source_url": "https://doi.org/10.1016/j.cell.2021.09.018", "branch_ids": ["editor_and_mismatch_repair"]},
+        {"id": "pe-nelson-2022", "title": "Engineered pegRNAs improve prime editing efficiency", "year": 2022, "doi": "10.1038/s41587-021-01039-7", "primary_source_url": "https://www.nature.com/articles/s41587-021-01039-7", "branch_ids": ["pegrna_design_and_stability"]},
+        {"id": "pe-yan-2024", "title": "Improving prime editing with an endogenous small RNA-binding protein", "year": 2024, "doi": "10.1038/s41586-024-07259-6", "primary_source_url": "https://www.nature.com/articles/s41586-024-07259-6", "branch_ids": ["cell_context_and_large_edit_scope"]},
+        {"id": "pe-twin-2022", "title": "Programmable deletion, replacement, integration and inversion of large DNA sequences with twin prime editing", "year": 2022, "doi": "10.1038/s41587-021-01133-w", "primary_source_url": "https://www.nature.com/articles/s41587-021-01133-w", "branch_ids": ["cell_context_and_large_edit_scope"]}
+      ]
+    },
+    {
+      "id": "rag-hallucination-evaluation",
+      "canonical_query": "retrieval augmented generation hallucination evaluation",
+      "research_question": "How should retrieval-augmented generation systems be evaluated for retrieval relevance, answer faithfulness and hallucination, answer relevance/completeness, and evaluator reliability?",
+      "target_branches": [
+        {"id": "retrieval_context_relevance", "label": "retrieved-context relevance and coverage"},
+        {"id": "answer_faithfulness_hallucination", "label": "answer faithfulness, unsupported claims and hallucination"},
+        {"id": "answer_relevance_and_completeness", "label": "answer relevance, correctness and completeness"},
+        {"id": "evaluation_reliability", "label": "human calibration, uncertainty and cross-domain reliability"}
+      ],
+      "anchors": [
+        {"id": "rag-lewis-2020", "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks", "year": 2020, "arxiv_id": "2005.11401", "primary_source_url": "https://papers.nips.cc/paper_files/paper/2020/hash/6b493230205f780e1bc26945df7481e5-Abstract.html", "branch_ids": ["retrieval_context_relevance"]},
+        {"id": "rag-ragas-2024", "title": "RAGAs: Automated Evaluation of Retrieval Augmented Generation", "year": 2024, "doi": "10.18653/v1/2024.eacl-demo.16", "primary_source_url": "https://aclanthology.org/2024.eacl-demo.16/", "branch_ids": ["retrieval_context_relevance", "answer_faithfulness_hallucination", "answer_relevance_and_completeness"]},
+        {"id": "rag-ares-2024", "title": "ARES: An Automated Evaluation Framework for Retrieval-Augmented Generation Systems", "year": 2024, "doi": "10.18653/v1/2024.naacl-long.20", "primary_source_url": "https://aclanthology.org/2024.naacl-long.20/", "branch_ids": ["retrieval_context_relevance", "answer_relevance_and_completeness", "evaluation_reliability"]},
+        {"id": "rag-ragtruth-2024", "title": "RAGTruth: A Hallucination Corpus for Developing Trustworthy Retrieval-Augmented Language Models", "year": 2024, "doi": "10.18653/v1/2024.acl-long.585", "primary_source_url": "https://aclanthology.org/2024.acl-long.585/", "branch_ids": ["answer_faithfulness_hallucination", "evaluation_reliability"]}
+      ]
+    }
+  ]
+}

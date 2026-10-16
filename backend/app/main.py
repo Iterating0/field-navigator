@@ -16,6 +16,8 @@ from app.services.field_decomposer import FieldDecomposer
 from app.services.field_explorer import FieldExplorer
 from app.services.paper_ranker import PaperRanker
 from app.services.access_policy import LiveRequestGate
+from app.services.query_resolver import QueryResolver
+from app.services.literature_retriever import LiteratureRetriever
 from app.web import FrontendFiles
 
 
@@ -36,10 +38,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds, follow_redirects=True) as client:
             app.state.live_gate = LiveRequestGate(settings.live_request_budget, settings.live_max_concurrency)
             llm = CompatibleLLMProvider(client, settings) if settings.llm_api_key else MockLLMProvider()
+            papers = OpenAlexProvider(client, settings.openalex_api_key, settings.openalex_mailto)
+            cache = FieldCache(settings.db_path)
             app.state.explorer = FieldExplorer(settings,
-                OpenAlexProvider(client, settings.openalex_api_key, settings.openalex_mailto),
+                papers,
                 FieldDecomposer(llm, require_evidence=bool(settings.llm_api_key)),
-                PaperRanker(settings.rank_weights), FieldCache(settings.db_path))
+                PaperRanker(settings.rank_weights), cache,
+                LiteratureRetriever(settings, papers, llm, client=client)
+                    if settings.llm_api_key and settings.llm_model.strip() else None)
+            app.state.resolver = QueryResolver(
+                settings,
+                llm if settings.llm_api_key and settings.llm_model.strip() else None,
+                papers,
+                cache,
+            )
             yield
 
     app = FastAPI(title='Field Navigator', version='0.1.0', lifespan=lifespan)

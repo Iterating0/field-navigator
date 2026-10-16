@@ -1,5 +1,7 @@
 import asyncio
+from copy import deepcopy
 import json
+import logging
 
 import httpx
 import pytest
@@ -8,7 +10,7 @@ from app.config import Settings
 from app.main import create_app
 from app.models.schemas import Decomposition, Paper
 from app.providers.base import ProviderError
-from app.providers.llm import CompatibleLLMProvider
+from app.providers.llm import CompatibleLLMProvider, strictify_json_schema
 from app.services.field_decomposer import FieldDecomposer
 
 
@@ -24,6 +26,11 @@ def completion(content=None):
         'content': json.dumps(VALID_ANALYSIS if content is None else content)}}]})
 
 
+def raw_completion(content):
+    return httpx.Response(200, json={'choices': [{'finish_reason': 'stop', 'message': {
+        'content': content}}]})
+
+
 def settings(mode='auto', **kwargs):
     return Settings(_env_file=None, llm_api_key='test-key', llm_model='test-model',
                     llm_response_format=mode, **kwargs)
@@ -32,6 +39,62 @@ def settings(mode='auto', **kwargs):
 async def generate(provider):
     return await provider.generate_structured(system='Return JSON', payload={'field': 'test'},
                                               schema=Decomposition.model_json_schema())
+
+
+def assert_strict_schema(node):
+    """Small validator for the subset required by strict structured output."""
+    if isinstance(node, list):
+        for item in node:
+            assert_strict_schema(item)
+        return
+    if not isinstance(node, dict):
+        return
+    assert 'default' not in node
+    properties = node.get('properties')
+    if node.get('type') == 'object' or isinstance(properties, dict):
+        properties = properties if isinstance(properties, dict) else {}
+        assert node.get('additionalProperties') is False
+        assert node.get('required') == list(properties)
+    for value in node.values():
+        assert_strict_schema(value)
+
+
+def test_strictify_schema_is_recursive_and_does_not_mutate_input():
+    schema = {
+        'type': 'object',
+        'properties': {
+            'title': {'type': 'string', 'default': 'untitled'},
+            'nullable_branch': {
+                'anyOf': [
+                    {'type': 'object', 'properties': {
+                        'label': {'type': 'string', 'default': 'unknown'},
+                    }, 'required': []},
+                    {'type': 'null'},
+                ],
+                'default': None,
+            },
+            'rows': {'type': 'array', 'items': {'$ref': '#/$defs/Row'}},
+        },
+        'required': ['title'],
+        'additionalProperties': True,
+        '$defs': {
+            'Row': {
+                'type': 'object',
+                'properties': {'value': {'type': 'number', 'default': 0}},
+                'default': {},
+            },
+        },
+    }
+    original = deepcopy(schema)
+
+    normalized = strictify_json_schema(schema)
+
+    assert schema == original
+    assert normalized is not schema
+    assert_strict_schema(normalized)
+    assert normalized['required'] == ['title', 'nullable_branch', 'rows']
+    assert normalized['properties']['nullable_branch']['anyOf'][0]['required'] == ['label']
+    assert normalized['properties']['nullable_branch']['anyOf'][1] == {'type': 'null'}
 
 
 def test_auto_prefers_strict_schema_when_supported():
@@ -46,11 +109,55 @@ def test_auto_prefers_strict_schema_when_supported():
     assert len(requests) == 1
     assert requests[0]['response_format']['type'] == 'json_schema'
     assert requests[0]['response_format']['json_schema']['strict'] is True
+    sent_schema = requests[0]['response_format']['json_schema']['schema']
+    prompt_schema = json.loads(requests[0]['messages'][0]['content'].split('JSON schema:\n', 1)[1])
+    assert sent_schema == prompt_schema
+    assert_strict_schema(sent_schema)
+
+
+@pytest.mark.parametrize(('model', 'configured', 'expected'), [
+    ('deepseek-flash', None, 0.0),
+    ('other-reasoning-model', None, None),
+    ('deepseek-flash', .3, .3),
+])
+def test_structured_sampling_is_low_randomness_only_for_supported_chat_models(model, configured, expected):
+    requests = []
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return completion()
+    async def run():
+        config = Settings(_env_file=None, llm_api_key='test-key', llm_model=model,
+                          llm_temperature=configured)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            await generate(CompatibleLLMProvider(http, config))
+    asyncio.run(run())
+    assert requests[0].get('temperature') == expected
+    if expected is None:
+        assert 'temperature' not in requests[0]
+
+
+def test_auto_does_not_retry_invalid_schema_even_when_error_mentions_unsupported():
+    requests = []
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(400, json={'error': {
+            'message': 'response_format schema is invalid and not supported',
+        }})
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            with pytest.raises(ProviderError, match='HTTP 400'):
+                await generate(CompatibleLLMProvider(http, settings()))
+    asyncio.run(run())
+    assert len(requests) == 1
 
 
 @pytest.mark.parametrize('status,error', [
     (400, UNSUPPORTED_FORMAT),
     (422, {'error': {'param': 'response_format', 'message': 'json_schema is not supported'}}),
+    (400, {'error': {
+        'param': 'response_format',
+        'message': 'Invalid parameter: response_format json_schema is not supported with this model',
+    }}),
 ])
 def test_auto_falls_back_once_and_remembers_provider_capability(status, error):
     requests = []
@@ -93,6 +200,73 @@ def test_auto_does_not_retry_unrelated_errors(status, error):
             with pytest.raises(ProviderError, match=f'HTTP {status}'):
                 await generate(CompatibleLLMProvider(http, settings()))
     asyncio.run(run())
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize('status', [500, 502, 503, 504])
+def test_upstream_5xx_is_temporary_unavailable_without_schema_fallback(status):
+    requests = []
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(status, text='upstream body must not leak')
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            provider = CompatibleLLMProvider(http, settings())
+            with pytest.raises(ProviderError) as caught:
+                await generate(provider)
+            return provider, caught.value
+
+    provider, error = asyncio.run(run())
+    assert error.status_code == 503
+    assert '暂时不可用' in str(error) and '稍后重试' in str(error)
+    assert 'key' not in str(error).lower()
+    assert 'upstream body' not in str(error)
+    assert provider._schema_unavailable is False
+    assert len(requests) == 1
+    assert requests[0]['response_format']['type'] == 'json_schema'
+
+
+@pytest.mark.parametrize('status', [401, 403])
+def test_upstream_auth_errors_keep_configuration_guidance(status):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(status, text='provider auth details must not leak')
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            with pytest.raises(ProviderError) as caught:
+                await generate(CompatibleLLMProvider(http, settings()))
+            return caught.value
+
+    error = asyncio.run(run())
+    assert error.status_code == 502
+    assert f'HTTP {status}' in str(error)
+    assert '鉴权' in str(error) and 'key' in str(error)
+    assert 'provider auth details' not in str(error)
+    assert len(requests) == 1
+
+
+def test_upstream_rate_limit_keeps_429_status_without_retry():
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(429, text='provider rate limit details must not leak')
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            with pytest.raises(ProviderError) as caught:
+                await generate(CompatibleLLMProvider(http, settings()))
+            return caught.value
+
+    error = asyncio.run(run())
+    assert error.status_code == 429
+    assert 'HTTP 429' in str(error) and '稍后重试' in str(error)
+    assert 'provider rate limit details' not in str(error)
     assert len(requests) == 1
 
 
@@ -153,6 +327,10 @@ def test_invalid_json_mode_result_does_not_enter_cache(tmp_path):
             async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
                 explorer = app.state.explorer
                 explorer.papers = Papers()
+                # This integration test supplies a deterministic paper source;
+                # disable the optional live retriever created for configured
+                # model settings so it cannot reach OpenAlex.
+                explorer.retriever = None
                 explorer.decomposer = FieldDecomposer(CompatibleLLMProvider(http, config))
                 with pytest.raises(ProviderError, match='schema'):
                     await explorer.explore('two dimensional electron gas')
@@ -187,16 +365,53 @@ def test_thinking_controls_are_explicit_and_provider_scoped(base, mode, expected
 
 
 def test_compact_ids_restore_evidence_and_judgments():
+    paper = Paper(
+        id='https://openalex.org/W123',
+        title='Paper',
+        abstract='This abstract supports branch evidence.',
+    )
+
     class LLM:
+        def __init__(self):
+            self.calls = 0
+
         async def generate_structured(self, **kwargs):
+            self.calls += 1
+            if set(kwargs['schema']['properties']) == {'summary'}:
+                assert 'current_summary' not in kwargs['payload']
+                return {'summary': 'The displayed excerpt supports branch evidence.'}
+            if 'source-scope classifier' in kwargs.get('system', ''):
+                return {'papers': [
+                    {'paper_id': paper['id'], 'scope_relation': 'direct',
+                     'reason': 'The paper matches the requested study object.'}
+                    for paper in kwargs['payload']['papers']
+                ]}
+            if 'independent evidence auditor' in kwargs['system']:
+                assert kwargs['payload']['papers'][0]['id'] == paper.id
+                return {'audits': [{
+                    'relation_id': 'r1',
+                    'verdict': 'supported',
+                    'reason': '摘要直接支持该关系。',
+                    'corrected_name': 'Branch evidence',
+                    'supported_quote_ids': ['r1:q1'],
+                    'scope_relation': 'direct',
+                }]}
             assert kwargs['payload']['papers'][0]['id'] == 'p1'
             return {'summary': 'Short summary', 'prerequisites': [], 'subfields': [
                 {'name': 'Branch', 'reason': 'Supported direction', 'confidence': .8,
-                 'evidence_paper_ids': ['p1', 'p999']}], 'paper_judgments': [
-                {'paper_id': 'p1', 'importance': .8, 'relevance': .9, 'reason': 'Contribution'}]}
-    paper = Paper(id='https://openalex.org/W123', title='Paper')
-    result = asyncio.run(FieldDecomposer(LLM()).decompose('Field', [paper]))
+                 'evidence_paper_ids': ['p1', 'p999'],
+                 'evidence_quotes': [{
+                     'paper_id': 'p1', 'source': 'abstract',
+                     'quote': 'supports branch evidence',
+                 }]}], 'paper_judgments': [
+                {'paper_id': 'p1', 'importance': .8, 'relevance': .9, 'reason': 'Contribution',
+                 'evidence_quote': 'supports branch evidence'}]}
+
+    llm = LLM()
+    result = asyncio.run(FieldDecomposer(llm).decompose('Field', [paper]))
+    assert llm.calls == 4
     assert result.subfields[0].evidence_paper_ids == [paper.id]
+    assert result.subfields[0].evidence_quotes[0].paper_id == paper.id
     assert result.paper_judgments[0].paper_id == paper.id
 
 
@@ -209,3 +424,114 @@ def test_truncated_completion_is_actionable_and_rejected():
             with pytest.raises(ProviderError, match='LLM_MAX_TOKENS'):
                 await generate(CompatibleLLMProvider(http, settings(llm_max_tokens=2048)))
     asyncio.run(run())
+
+
+def test_valid_unicode_and_json_escapes_keep_their_original_semantics():
+    expected = {
+        'summary': '拓扑相变 α 与 literal \\alpha',
+        'prerequisites': [], 'subfields': [], 'paper_judgments': [],
+    }
+    content = json.dumps(expected, ensure_ascii=False)
+
+    def handle(request):
+        return raw_completion(content)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            return await generate(CompatibleLLMProvider(http, settings()))
+
+    assert asyncio.run(run()) == expected
+
+
+def test_invalid_latex_escapes_are_repaired_without_changing_provenance():
+    content = r'''{"summary":"Band \alpha and \Delta","prerequisites":[],"subfields":[{"name":"Branch","reason":"Evidence \Delta","confidence":0.8,"evidence_paper_ids":["W1"],"evidence_quotes":[{"paper_id":"W1","source":"abstract","quote":"Observed \sigma_{xx}"}]}],"paper_judgments":[{"paper_id":"W1","importance":0.8,"relevance":0.9,"reason":"Uses \hat{H}","evidence_quote":"Eq. \alpha"}]}'''
+
+    def handle(request):
+        return raw_completion(content)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            return await generate(CompatibleLLMProvider(http, settings()))
+
+    result = asyncio.run(run())
+    assert result['summary'] == r'Band \alpha and \Delta'
+    assert result['subfields'][0]['evidence_quotes'][0] == {
+        'paper_id': 'W1', 'source': 'abstract', 'quote': r'Observed \sigma_{xx}'
+    }
+    assert result['paper_judgments'][0]['evidence_quote'] == r'Eq. \alpha'
+
+
+def test_whole_json_fence_is_unwrapped_but_trailing_commentary_is_rejected():
+    fenced = '```json\n' + json.dumps(VALID_ANALYSIS, ensure_ascii=False) + '\n```'
+
+    def handle(request):
+        return raw_completion(fenced)
+
+    async def run_fenced():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            return await generate(CompatibleLLMProvider(http, settings()))
+
+    assert asyncio.run(run_fenced()) == VALID_ANALYSIS
+
+    requests = []
+    def trailing_handle(request):
+        requests.append(request)
+        return raw_completion(fenced + '\ncommentary')
+
+    async def run_trailing():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(trailing_handle)) as http:
+            with pytest.raises(ProviderError, match='LLM 响应无效'):
+                await generate(CompatibleLLMProvider(http, settings()))
+
+    asyncio.run(run_trailing())
+    assert len(requests) == 1
+
+
+def test_raw_newline_inside_json_string_is_escaped_without_loss():
+    content = '{"summary":"line one' + '\n' + 'line two","prerequisites":[],"subfields":[],"paper_judgments":[]}'
+
+    def handle(request):
+        return raw_completion(content)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            return await generate(CompatibleLLMProvider(http, settings()))
+
+    assert asyncio.run(run())['summary'] == 'line one\nline two'
+
+
+def test_incomplete_json_is_still_rejected_after_narrow_repair(caplog):
+    content = r'{"summary":"Band \alpha","prerequisites":[],"subfields":[],"paper_judgments":[]'
+
+    def handle(request):
+        return raw_completion(content)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            with pytest.raises(ProviderError, match='LLM 响应无效'):
+                await generate(CompatibleLLMProvider(http, settings()))
+
+    caplog.set_level(logging.ERROR, logger='app.providers.llm')
+    asyncio.run(run())
+    record = next(record for record in caplog.records if record.name == 'app.providers.llm')
+    assert 'type=JSONDecodeError' in record.getMessage()
+    assert 'line=' in record.getMessage() and 'col=' in record.getMessage()
+    assert f'len={len(content)}' in record.getMessage()
+    assert 'Band' not in record.getMessage()
+
+
+def test_invalid_json_does_not_trigger_a_per_content_network_retry():
+    content = r'{"summary":"Band \alpha","prerequisites":[],"subfields":[],"paper_judgments":[]'
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return raw_completion(content)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            with pytest.raises(ProviderError):
+                await generate(CompatibleLLMProvider(http, settings()))
+
+    asyncio.run(run())
+    assert len(requests) == 1

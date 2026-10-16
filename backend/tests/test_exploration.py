@@ -134,7 +134,10 @@ def test_unknown_field_without_llm_has_papers_but_no_invented_taxonomy(client):
     client.app.state.explorer.papers = SearchStub()
     result = post(client, 'Protein folding', mode='live').json()
     assert result['prerequisites'] == result['subfields'] == []
-    assert len(result['core_papers']) == 5 and result['analysis_source'] == 'mock'
+    assert len(result['core_papers']) == 5
+    assert result['paper_source'] == 'openalex'
+    assert result['analysis_source'] == 'pending' and result['phase'] == 'papers'
+    assert result['evidence_papers'] == []
 
 
 def test_empty_search_not_cached(client):

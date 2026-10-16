@@ -12,7 +12,7 @@
 部署目录使用仓库根目录，执行：docker compose -f deploy/compose.yml up -d --build。
 网站容器监听 80。普通 VPS 的主机反向代理转发到 127.0.0.1:8080；若部署面板提供容器域名网关，按面板要求通过其 80 端口路由，或在面板变量中设置 FIELD_NAVIGATOR_BIND=0.0.0.0、FIELD_NAVIGATOR_PORT=8080 并限制服务器防火墙只让网关访问该端口。后端端口 8000 仅供 Docker 内部访问，不要公开。
 
-注意：这个 MVP 没有登录、账户或每人调用限额。可设置 LIVE_REQUEST_BUDGET=30、LIVE_MAX_CONCURRENCY=2，限制单个后台进程的非缓存实时请求总次数与并发；进程重启后重新计数，离线演示和有效缓存不消耗限额。用于内部试用时，可用部署面板的访问控制保护域名。不要把进程限额当作按用户配额或计费保证。
+注意：这个 MVP 没有登录、账户或每人调用限额。Compose 与环境示例默认设置 LIVE_REQUEST_BUDGET=30、LIVE_MAX_CONCURRENCY=2，限制单个后台进程的非缓存实时请求总次数与并发；进程重启后重新计数，离线演示和有效缓存不消耗限额。本地内部使用可显式设为 0 关闭对应限制。用于内部试用时，可用部署面板的访问控制保护域名。不要把进程限额当作按用户配额或计费保证。
 
 在服务器的仓库根目录创建 .env，从 .env.example 复制后填入使用者另外提供的服务密钥：OPENALEX_API_KEY、OPENALEX_MAILTO、LLM_API_KEY、LLM_BASE_URL、LLM_MODEL。如尚无 key，保留空值；内置 NHSE 离线演示仍可使用。不要生成密钥、猜测账户凭据、把 key 写入镜像或代码、在日志中打印 key，或提交服务器 .env。
 

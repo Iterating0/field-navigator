@@ -16,7 +16,7 @@
 以浅克隆方式获取以下固定 commit：
 
 ```text
-fc8e80c4c08102d568786227d65f1f1772dd1424
+fe4fd4f6c22f72133a25dcb97251af4cb1ab4e5c
 ```
 
 随后以 detached checkout 构建前端。构建不会跟随 `main` 或其他分支变化。ModelScope 构建环境需要能够访问 GitHub 和 npm registry；上传包本身不携带应用源码。

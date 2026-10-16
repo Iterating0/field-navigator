@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { ArrowUpRight, LoaderCircle, Search } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { Mode } from "../types";
 interface Props {
   query: string;
@@ -8,6 +9,7 @@ interface Props {
   setMode: (m: Mode) => void;
   busy: boolean;
   onSearch: () => void;
+  variant?: "compact" | "hero";
 }
 export function SearchBar({
   query,
@@ -16,14 +18,28 @@ export function SearchBar({
   setMode,
   busy,
   onSearch,
+  variant = "compact",
 }: Props) {
+  const { t } = useTranslation("workspace");
   const input = useRef<HTMLInputElement>(null);
+  const modeHintId = useId();
+  const modeHint = t("search.modeHint");
   useEffect(() => {
     const focus = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        const currentInput = input.current;
+        const activeModal = document.querySelector<HTMLElement>(
+          '[aria-modal="true"]',
+        );
+        if (
+          !currentInput ||
+          currentInput.closest("[inert]") ||
+          (activeModal && !activeModal.contains(currentInput))
+        )
+          return;
         e.preventDefault();
-        input.current?.focus();
-        input.current?.select();
+        currentInput.focus();
+        currentInput.select();
       }
     };
     window.addEventListener("keydown", focus);
@@ -31,7 +47,8 @@ export function SearchBar({
   }, []);
   return (
     <form
-      className="search-bar"
+      className={`search-bar ${variant === "hero" ? "search-bar--hero" : ""}`}
+      aria-label={t("search.formAria")}
       onSubmit={(e) => {
         e.preventDefault();
         onSearch();
@@ -40,32 +57,42 @@ export function SearchBar({
       <Search size={18} />
       <input
         ref={input}
-        aria-label="搜索科研领域"
-        placeholder="输入一个领域，发现它的知识地图…"
+        id="research-query"
+        aria-label={t("search.inputAria")}
+        placeholder={
+          variant === "hero"
+            ? t("search.heroPlaceholder")
+            : t("search.compactPlaceholder")
+        }
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        maxLength={180}
+        maxLength={1000}
         required
         minLength={2}
       />
-      <kbd>Ctrl K</kbd>
+      <kbd>{t("search.shortcut")}</kbd>
       <select
-        aria-label="数据模式"
+        aria-label={t("search.modeAria")}
+        aria-describedby={modeHintId}
+        title={modeHint}
         value={mode}
         disabled={busy}
         onChange={(e) => setMode(e.target.value as Mode)}
       >
-        <option value="auto">自动模式</option>
-        <option value="live">OpenAlex 实时</option>
-        <option value="demo">离线演示</option>
+        <option value="auto">{t("mode.auto.label")}</option>
+        <option value="live">{t("mode.live.label")}</option>
+        <option value="demo">{t("mode.demo.label")}</option>
       </select>
+      <span id={modeHintId} className="sr-only">
+        {modeHint}
+      </span>
       <button className="primary" disabled={busy || query.trim().length < 2}>
         {busy ? (
           <LoaderCircle className="spin" size={16} />
         ) : (
           <ArrowUpRight size={17} />
         )}
-        <span>{busy ? "探索中" : "探索"}</span>
+        <span>{busy ? t("search.resolving") : t("search.explore")}</span>
       </button>
     </form>
   );

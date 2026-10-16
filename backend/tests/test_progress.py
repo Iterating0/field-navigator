@@ -23,7 +23,8 @@ class Papers:
 
 
 def make_explorer(tmp_path, decomposer):
-    config = Settings(_env_file=None, llm_api_key='test', database_path=str(tmp_path / 'cache.db'))
+    config = Settings(_env_file=None, llm_api_key='test', llm_model='test-model',
+                      database_path=str(tmp_path / 'cache.db'))
     return FieldExplorer(config, Papers(), decomposer, PaperRanker(config.rank_weights), FieldCache(config.db_path))
 
 
@@ -117,14 +118,41 @@ def test_stream_terminal_success_cache_and_error(tmp_path):
 def test_split_requests_have_independent_schemas_and_restore_ids():
     class LLM:
         async def generate_structured(self, **kwargs):
+            if set(kwargs['schema']['properties']) == {'summary'}:
+                assert 'current_summary' not in kwargs['payload']
+                return {'summary': 'Map'}
+            if 'source-scope classifier' in kwargs.get('system', ''):
+                return {'papers': [
+                    {'paper_id': paper['id'], 'scope_relation': 'direct',
+                     'reason': 'The paper matches the requested study object.'}
+                    for paper in kwargs['payload']['papers']
+                ]}
+            if 'audits' in kwargs['schema']['properties']:
+                return {'audits': [{
+                    'relation_id': 'r1',
+                    'verdict': 'supported',
+                    'reason': 'The quoted abstract supports this branch.',
+                    'corrected_name': 'Evidence-backed branch',
+                    'supported_quote_ids': ['r1:q1'],
+                    'scope_relation': 'direct',
+                }]}
             if set(kwargs['schema']['properties']) == {'paper_judgments'}:
                 return {'paper_judgments': [{'paper_id': 'p1', 'importance': .8, 'relevance': .9, 'reason': 'Contribution'}]}
             assert set(kwargs['schema']['properties']) == {'summary', 'prerequisites', 'subfields'}
-            return {'summary': 'Map', 'prerequisites': [], 'subfields': []}
+            return {'summary': 'Map', 'prerequisites': [], 'subfields': [{
+                'name': 'Evidence-backed branch',
+                'reason': 'The supplied metadata supports this direction.',
+                'confidence': .8,
+                'evidence_paper_ids': ['p1'],
+                'evidence_quotes': [{
+                    'paper_id': 'p1', 'source': 'abstract',
+                    'quote': 'The paper provides evidence.',
+                }],
+            }]}
 
     async def run():
         decomposer = FieldDecomposer(LLM())
-        papers = [Paper(id='W1', title='Paper')]
+        papers = [Paper(id='W1', title='Paper', abstract='The paper provides evidence.')]
         assert (await decomposer.decompose_map('Test', papers)).summary == 'Map'
         assert (await decomposer.judge_papers('Test', papers))[0].paper_id == 'W1'
     asyncio.run(run())

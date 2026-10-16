@@ -3,6 +3,7 @@ import re
 import httpx
 from app.models.schemas import Paper
 from app.providers.base import ProviderError
+from app.services.paper_quality import quality_filter_and_dedupe
 
 
 def reconstruct_abstract(index: dict | None) -> str | None:
@@ -23,6 +24,10 @@ def parse_work(work: dict) -> Paper:
         doi=work.get('doi'), url=work.get('doi') or location.get('landing_page_url') or work['id'],
         abstract=reconstruct_abstract(work.get('abstract_inverted_index')),
         journal=source.get('display_name'), referenced_works=work.get('referenced_works') or [],
+        work_type=work.get('type'),
+        is_retracted=bool(work.get('is_retracted', False)),
+        is_paratext=bool(work.get('is_paratext', work.get('type') == 'paratext')),
+        work_version=location.get('version'),
     )
 
 
@@ -54,11 +59,16 @@ class OpenAlexProvider:
             raise ProviderError('OpenAlex 暂时不可用，请检查网络连接后重试。') from exc
         raise ProviderError('OpenAlex 暂时不可用。')
 
-    async def search_papers(self, query: str, limit: int = 40) -> list[Paper]:
-        data = await self._get('works', {'search': query, 'per_page': min(limit, 100),
-                                       'filter': 'is_retracted:false'})
+    async def search_papers(self, query: str, limit: int = 40, *, sort: str | None = None,
+                            search_scope: str = 'all') -> list[Paper]:
+        search_key = 'search.title_and_abstract' if search_scope == 'title_abstract' else 'search'
+        params = {search_key: query, 'per_page': min(limit, 100),
+                  'filter': 'is_retracted:false'}
+        if sort:
+            params['sort'] = sort
+        data = await self._get('works', params)
         try:
-            return list({p.id: p for p in map(parse_work, data.get('results', []))}.values())
+            return quality_filter_and_dedupe(map(parse_work, data.get('results', [])))
         except (KeyError, TypeError, ValueError) as exc:
             raise ProviderError('OpenAlex 返回的论文数据格式异常，请重试。') from exc
 
@@ -74,4 +84,4 @@ class OpenAlexProvider:
             raise ProviderError('需要合法的 OpenAlex work ID。', 422)
         data = await self._get('works', {'filter': f'cites:{identifier},is_retracted:false',
                                        'per_page': min(limit, 100)})
-        return [parse_work(w) for w in data.get('results', [])]
+        return quality_filter_and_dedupe(parse_work(w) for w in data.get('results', []))

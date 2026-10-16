@@ -9,6 +9,7 @@ from app.models.schemas import Decomposition, Paper, PaperJudgment
 from app.providers.base import ProviderError
 from app.services.field_explorer import FieldExplorer
 from app.services.paper_ranker import PaperRanker
+from app.services.literature_retriever import RetrievalResult
 
 
 class Papers:
@@ -102,4 +103,49 @@ def test_shortlist_keeps_retrieval_broad_and_ranks_only_analyzed_evidence(tmp_pa
         assert result.candidate_count == 40 and result.analyzed_paper_count == 16
         assert len(result.core_papers) == 8 and all('llm_importance' in p.signals for p in result.core_papers)
         assert any('16' in w for w in result.warnings)
+    asyncio.run(run())
+
+
+def test_changed_evidence_needs_reanalyze_identical_papers_and_legacy_artifact_is_readable(tmp_path):
+    class FocusedRetriever:
+        needs = []
+        focus = {}
+
+        async def retrieve(self, *args, **kwargs):
+            return RetrievalResult([Paper(id='W1', title='Test field', abstract='Evidence')],
+                                   ['Test field'], evidence_needs=self.needs,
+                                   candidate_focus_ids=self.focus)
+
+    class FocusedDecomposer(Decomposer):
+        seen = []
+
+        async def decompose_map(self, field, papers, *, evidence_needs=None, candidate_focus_ids=None):
+            self.seen.append((evidence_needs, candidate_focus_ids))
+            return await super().decompose_map(field, papers)
+
+    async def run():
+        retriever, decomposer = FocusedRetriever(), FocusedDecomposer()
+        settings = Settings(_env_file=None, llm_api_key='test', database_path=str(tmp_path / 'focus.db'))
+        cache = FieldCache(settings.db_path)
+        service = FieldExplorer(settings, Papers(), decomposer, PaperRanker(settings.rank_weights), cache, retriever)
+        await service.explore('Test field', 'live')
+        with cache.connect() as db:
+            # Simulate a pre-extension search artifact and expire only final.
+            db.execute('DELETE FROM fields')
+        search_key = service.search_fingerprint + ':test field'
+        cache.save_artifact('search', search_key, {'papers': [Paper(id='W1', title='Test field', abstract='Evidence').model_dump()],
+                                                  'queries': ['Test field'], 'warnings': []}, 3600)
+        await service.explore('Test field', 'live')
+        assert decomposer.maps == 1  # Empty metadata matches legacy analysis.
+        retriever.needs = [{'id': 'need-1', 'label': 'Reference sensitivity', 'focused_query': 'test field reference'}]
+        retriever.focus = {'W1': ['need-1']}
+        # Refresh search while allowing analysis cache reuse if its key were wrong.
+        cache.save_artifact('search', search_key, {'papers': [Paper(id='W1', title='Test field', abstract='Evidence').model_dump()],
+            'queries': ['Test field'], 'warnings': [], 'evidence_needs': retriever.needs,
+            'candidate_focus_ids': retriever.focus}, 3600)
+        with cache.connect() as db:
+            db.execute('DELETE FROM fields')
+        await service.explore('Test field', 'live')
+        assert decomposer.maps == 2 and decomposer.judgments == 2
+        assert decomposer.seen[-1] == (retriever.needs, retriever.focus)
     asyncio.run(run())

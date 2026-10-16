@@ -2,7 +2,7 @@
 
 书目信息核对时间：2026-09-20。
 
-`demo_papers.json` 的前 9 篇通过 Crossref DOI 元数据接口获取标题、作者、出版年份和期刊；第 10 篇核对 arXiv 预印本页。可用 `python scripts/refresh_demo_metadata.py` 重新获取书目信息（需要网络）。此脚本是维护工具，运行应用时不会调用 Crossref。
+`demo_papers.json` 的前 9 篇通过 Crossref DOI 元数据接口获取标题、作者、出版年份和期刊；第 10 篇核对 arXiv 预印本页。演示资料在维护时核对，运行应用时不会调用 Crossref；如需更新，可按以下 DOI 和 arXiv 原始来源重新核对。
 
 1. [Yao & Wang, 2018](https://doi.org/10.1103/PhysRevLett.121.086803)
 2. [Kunst et al., 2018](https://doi.org/10.1103/PhysRevLett.121.026808)
