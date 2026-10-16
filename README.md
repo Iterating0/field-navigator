@@ -8,7 +8,7 @@
 
 Docker Compose 部署说明见 [DEPLOY.md](DEPLOY.md)；可将文中的部署指令直接交给自动部署器。
 
-魔搭单容器部署见 [ModelScope部署说明](deploy/modelscope.md)。参赛作品范围、演示路径与交付状态见 [参赛说明](docs/HACKATHON.md)。参赛发布优先使用包含当前源码的根 `Dockerfile`；`deploy/modelscope-bootstrap` 是固定旧提交的扁平上传示例，更新其源码 pin 前不要把它当作当前 q28 发布版。
+魔搭单容器部署见 [ModelScope部署说明](deploy/modelscope.md)。参赛作品范围、演示路径与交付状态见 [参赛说明](docs/HACKATHON.md)。参赛发布可使用完整源码的根 `Dockerfile`，也可使用已固定到 q28 公开源码的 `deploy/modelscope-bootstrap` 四文件上传包；固定版本不会跟随分支变化。
 
 界面采用搜索、左侧探索记录、中间分支表与关系图、右侧论文详情布局。支持缩放、拖动画布、放大图谱、置信度筛选、前置/分支显示开关、已分析节点的二层视图、证据展开、阅读清单/笔记、研究简报和 JSON 导出。
 

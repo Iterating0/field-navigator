@@ -8,6 +8,7 @@ Python 3.12-slim 启动单个 FastAPI/uvicorn 进程。对外服务固定监听
 网页上传向导也可以使用 [四文件部署包](modelscope-bootstrap/README.md)。该包的
 `Dockerfile` 在构建时从公开GitHub仓库获取固定提交的源码，避免上传文件夹时
 丢失路径。四个文件须位于创空间根目录；应用源码和原Dockerfile仍在GitHub公开。
+本次 q28 提交的源码固定于 `fe4fd4f6c22f72133a25dcb97251af4cb1ab4e5c`，不会跟随分支变化。
 
 ## 配置依据
 

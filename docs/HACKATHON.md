@@ -50,7 +50,7 @@ JSON-mode 的 raw presentation 预算与业务 schema 分开：模型每组最�
 
 ## 发布许可与魔搭状态
 
-参赛发布版采用 Apache License 2.0，官方许可证全文见仓库根目录 [LICENSE](../LICENSE)。公开源码见 [GitHub 仓库](https://github.com/Iterating0/field-navigator)。截至 2026 年 10 月 16 日，本地 q28 优化版尚未上传本轮参赛包；ModelScope 侧仍需完成当前源码构建、平台变量配置、健康检查和一次真实运行验证。公开发布优先使用包含当前源码的根 `Dockerfile`；`deploy/modelscope-bootstrap` 是固定旧提交的扁平上传示例，不代表当前 q28 发布版，除非先更新其源码 pin。
+参赛发布版采用 Apache License 2.0，官方许可证全文见仓库根目录 [LICENSE](../LICENSE)。公开源码见 [GitHub 仓库](https://github.com/Iterating0/field-navigator)。截至 2026 年 10 月 16 日，q28 源码已同步到公开发布分支；ModelScope 侧仍需完成当前源码构建、平台变量配置、健康检查和一次真实运行验证。公开发布可使用完整源码的根 `Dockerfile`；`deploy/modelscope-bootstrap` 四文件上传包已固定到 q28 公开源码提交 `fe4fd4f6c22f72133a25dcb97251af4cb1ab4e5c`。
 界面交互和生产构建已完成自动化验收；它们与科研质量评测分开记录，不能替代论文逐条阅读或人工领域判断。
 
 魔搭适配见[部署说明](../deploy/modelscope.md)。根Dockerfile在一个容器中构建前端并运行FastAPI，监听7860端口。Compose/预览默认每个后台进程最多接受30次非缓存实时请求，同时处理最多2次；本地开发需显式将 `LIVE_REQUEST_BUDGET=0` 与 `LIVE_MAX_CONCURRENCY=0` 才取消限制，离线演示和有效缓存仍可用。该限制用于约束公开试用，不是每用户配额或计费保证。
