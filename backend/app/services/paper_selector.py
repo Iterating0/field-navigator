@@ -7,11 +7,35 @@ from app.services.paper_ranker import lexical_relevance, tokens
 from app.services.paper_quality import quality_filter_and_dedupe
 
 
-def select_analysis_papers(field: str, papers: list[Paper], limit: int = 0) -> list[Paper]:
+def select_analysis_papers(field: str, papers: list[Paper], limit: int = 0, *,
+                           evidence_needs: list[dict] | None = None,
+                           candidate_focus_ids: dict[str, list[str]] | None = None) -> list[Paper]:
     papers = quality_filter_and_dedupe(papers)
+    limit = max(0, limit)
     if not limit or len(papers) <= limit:
         return list(papers)
-    selected = set(range(min(2, limit)))
+    selected: set[int] = set()
+    # Retrieval provenance only reserves a chance to be assessed, never a core
+    # recommendation or a scientific coverage claim. Keep one candidate per
+    # requested dimension before broad, highly cited anchors fill the budget.
+    focus = candidate_focus_ids or {}
+    for need in list(evidence_needs or [])[:3]:
+        if not isinstance(need, dict):
+            continue
+        need_id = need.get('id')
+        if not need_id or len(selected) >= limit:
+            break
+        pool_for_need = [i for i, paper in enumerate(papers)
+                         if any(need_id in focus.get(record_id, [])
+                                for record_id in [paper.id, *paper.source_record_ids])]
+        if any(i in selected for i in pool_for_need):
+            continue
+        if pool_for_need:
+            selected.add(max(pool_for_need, key=lambda i: (
+                bool(papers[i].abstract), lexical_relevance(field, papers[i]), -i)))
+    for index in range(min(2, limit)):
+        if len(selected) < limit:
+            selected.add(index)
     # Reserve a little space for recent, established, and overview work without
     # searching outside the retrieved evidence or relying only on citations.
     pool = range(max(2, math.ceil(len(papers) * .75)))

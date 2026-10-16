@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     llm_response_format: str = 'auto'
     llm_thinking: Literal['auto', 'provider', 'disabled', 'low', 'high'] = 'auto'
     llm_max_tokens: int = Field(default=16384, ge=1024, le=65536)
+    llm_temperature: float | None = Field(default=None, ge=0, le=2)
     llm_analysis_limit: int = Field(default=0, ge=0, le=100)
     database_path: str = 'backend/data/field_navigator.sqlite3'
     cache_ttl_hours: int = Field(default=168, ge=1)
@@ -37,6 +38,16 @@ class Settings(BaseSettings):
     rank_relevance: float = Field(default=.30, gt=0)
     rank_shared_references: float = Field(default=.10, ge=0)
     rank_llm_importance: float = Field(default=.25, ge=0)
+
+    @property
+    def structured_temperature(self) -> float | None:
+        if self.llm_temperature is not None:
+            return self.llm_temperature
+        model = self.llm_model.casefold().rsplit('/', 1)[-1]
+        # These chat models support the documented temperature parameter.
+        # Keep other model families' defaults, including reasoning APIs that
+        # may reject an explicit sampling temperature.
+        return 0.0 if model.startswith(('deepseek-flash', 'deepseek-chat')) else None
 
     @property
     def thinking_options(self) -> dict:

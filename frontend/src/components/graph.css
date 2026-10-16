@@ -1,0 +1,466 @@
+.graph-frame {
+  --graph-edge-prerequisite: var(--prerequisite-border);
+  --graph-edge-subfield: var(--branch-border);
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.graph-toolbar {
+  display: flex;
+  min-height: 64px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.graph-toolbar-heading,
+.graph-toolbar-actions {
+  display: flex;
+  align-items: center;
+}
+
+.graph-toolbar-heading {
+  min-width: 0;
+  gap: 9px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.graph-toolbar-heading > svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.graph-toolbar-heading small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 450;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.graph-toolbar-actions {
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.graph-toolbar .icon-button {
+  display: grid;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.graph-toolbar .icon-button:hover {
+  border-color: var(--accent);
+  background: var(--hover);
+  color: var(--accent);
+}
+
+.graph-toolbar .icon-button:focus-visible,
+.field-node__trigger:focus-visible,
+.graph-frame .react-flow__controls-button:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  outline-offset: 2px;
+}
+
+.graph-canvas {
+  position: relative;
+  height: 505px;
+  min-height: 300px;
+  background: var(--canvas);
+  isolation: isolate;
+}
+
+.graph-canvas .react-flow {
+  width: 100%;
+  height: 100%;
+}
+
+.field-node {
+  width: 220px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.field-node__trigger {
+  display: block;
+  width: 100%;
+  min-height: 124px;
+  margin: 0;
+  padding: 14px 15px 12px;
+  border-radius: inherit;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.field-node__trigger:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.field-node__trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.field-node.current {
+  border-color: var(--current-border);
+  background: var(--current-bg);
+  color: var(--current-text);
+  cursor: default;
+}
+
+.field-node.prerequisite {
+  border-color: var(--prerequisite-border);
+  background: var(--prerequisite-bg);
+  color: var(--prerequisite-text);
+}
+
+.field-node.subfield {
+  border-color: var(--branch-border);
+  background: var(--branch-bg);
+  color: var(--branch-text);
+}
+
+.node-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+  color: currentColor;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.35;
+  opacity: 1;
+}
+
+.node-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.field-node__trigger > strong {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+  color: currentColor;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.node-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 11px;
+}
+
+.node-bottom span {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  color: currentColor;
+  font-size: 12px;
+  line-height: 1.35;
+  opacity: 1;
+}
+
+.node-action {
+  display: grid;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  background: transparent;
+  color: currentColor;
+  pointer-events: none;
+}
+
+.field-node__trigger:hover:not(:disabled) .node-action {
+  background: var(--hover);
+}
+
+.react-flow__node-field > .react-flow__handle {
+  opacity: 0;
+}
+
+.graph-legend {
+  position: absolute;
+  z-index: 4;
+  top: 16px;
+  left: 16px;
+  display: flex;
+  max-width: calc(100% - 32px);
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  pointer-events: none;
+}
+
+.graph-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.graph-legend-swatch {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.graph-legend-swatch.prerequisite {
+  background: var(--prerequisite-border);
+}
+
+.graph-legend-swatch.current {
+  background: var(--current-border);
+}
+
+.graph-legend-swatch.subfield {
+  background: var(--branch-border);
+}
+
+.graph-footer {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.graph-footer span:last-child {
+  flex: 0 0 auto;
+  text-align: right;
+}
+
+.field-graph-modal-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: clamp(12px, 3vw, 32px);
+  background: var(--overlay);
+}
+
+.field-graph-dialog {
+  display: flex;
+  width: min(1240px, 100%);
+  height: min(860px, 100%);
+  max-height: calc(100dvh - 24px);
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-floating);
+  outline: none;
+}
+
+.field-graph-dialog .graph-frame {
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.field-graph-dialog .graph-canvas {
+  height: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.field-graph-dialog .graph-footer {
+  flex: 0 0 auto;
+}
+
+.graph-frame .react-flow__controls {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.graph-frame .react-flow__controls-button {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.graph-frame .react-flow__controls-button:last-child {
+  border-bottom: 0;
+}
+
+.graph-frame .react-flow__controls-button:hover {
+  background: var(--hover);
+}
+
+.graph-frame .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.graph-frame .react-flow__attribution {
+  padding: 2px 4px;
+  background: var(--surface) !important;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .graph-frame *,
+  .graph-frame *::before,
+  .graph-frame *::after,
+  .field-graph-modal-backdrop,
+  .field-graph-dialog {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .graph-toolbar {
+    align-items: flex-start;
+    padding: 11px 12px;
+  }
+
+  .graph-toolbar-heading {
+    flex-wrap: wrap;
+    gap: 6px 8px;
+  }
+
+  .graph-toolbar-heading small {
+    flex-basis: 100%;
+    margin-left: 26px;
+  }
+
+  .graph-canvas {
+    height: 425px;
+  }
+
+  .field-node {
+    width: 194px;
+  }
+
+  .field-node__trigger {
+    min-height: 118px;
+    padding: 12px 13px 10px;
+  }
+
+  .graph-legend {
+    top: 12px;
+    left: 12px;
+    max-width: calc(100% - 24px);
+  }
+
+  .graph-footer {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 12px;
+  }
+
+  .graph-footer span:last-child {
+    text-align: left;
+  }
+
+  .field-graph-modal-backdrop {
+    padding: 0;
+  }
+
+  .field-graph-dialog {
+    width: 100%;
+    height: 100%;
+    max-height: 100dvh;
+    border-radius: 0;
+  }
+}
+
+@media (max-width: 430px) {
+  .graph-toolbar {
+    gap: 8px;
+  }
+
+  .graph-toolbar-actions {
+    gap: 4px;
+  }
+
+  .graph-toolbar .icon-button {
+    width: 40px;
+    min-width: 40px;
+  }
+
+  .graph-canvas {
+    height: 380px;
+  }
+
+  .graph-legend {
+    gap: 6px 10px;
+    font-size: 12px;
+  }
+}

@@ -1,5 +1,14 @@
 export type Mode = "auto" | "demo" | "live";
 
+/** UI/API language. Keep this independent from React so state and export code
+ * can use the same stable contract without creating a persistence side effect. */
+export type Language = "zh-CN" | "en";
+export const DEFAULT_LANGUAGE: Language = "zh-CN";
+
+export function normalizeLanguage(value: unknown): Language {
+  return value === "en" ? "en" : DEFAULT_LANGUAGE;
+}
+
 export type EvidenceStatus = "supported" | "weak" | "unverified";
 export type ClaimLevel =
   "research_direction" | "theory_or_proposed" | "title_only";
@@ -75,6 +84,8 @@ export interface FieldNode {
   quality_revision?: number;
   /** The user's original question, kept separate from the canonical field name. */
   research_question?: string | null;
+  /** Language used when this field was resolved and analysed. */
+  language?: Language;
 }
 
 export type ExploreEvent =
@@ -96,4 +107,6 @@ export interface QueryResolution {
   message: string;
   source: "llm" | "alias" | "direct";
   candidates: QueryCandidate[];
+  /** Language used for the resolver response. */
+  language?: Language;
 }

@@ -8,10 +8,19 @@ class Auditor:
     def __init__(self, result=None):
         self.calls = []
         self.result = result or {'audits': [{'relation_id': 'r1', 'verdict': 'supported',
-                                           'reason': '摘录直接支持该方向。'}]}
+                                           'reason': '摘录直接支持该方向。',
+                                           'corrected_name': 'Audited research direction',
+                                           'supported_quote_ids': ['r1:q1'],
+                                           'scope_relation': 'direct'}]}
 
     async def generate_structured(self, **kwargs):
         self.calls.append(kwargs)
+        if 'source-scope classifier' in kwargs.get('system', ''):
+            return {'papers': [
+                {'paper_id': paper['id'], 'scope_relation': 'direct',
+                 'reason': 'The paper matches the requested study object.'}
+                for paper in kwargs['payload']['papers']
+            ]}
         return self.result
 
 
@@ -77,7 +86,7 @@ def test_explicit_cross_dimensional_and_cross_species_questions_keep_comparative
             field, [], [relation([('p1', excerpt)])], {'p1': SentPaper('p1', 'Comparative diagnostics', excerpt)},
             research_question=question))
         assert len(branches) == 1
-        assert len(auditor.calls) == 1
+        assert len(auditor.calls) == 2
 
 
 def test_core_own_excerpt_scope_overrides_other_background_in_the_same_abstract():

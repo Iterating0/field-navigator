@@ -1,5 +1,16 @@
-import { ArrowRight, BookOpen, Compass, MessageCircle, X } from "lucide-react";
+import {
+  ArrowRight,
+  ArrowUpRight,
+  BookOpen,
+  Compass,
+  MessageCircle,
+  X,
+} from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { QueryCandidate, QueryResolution } from "../types";
+import "./evidence.css";
+
+type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 function safeLink(url: string | null) {
   try {
@@ -12,6 +23,53 @@ function safeLink(url: string | null) {
   }
 }
 
+function CandidateEvidence({
+  candidate,
+  t,
+}: {
+  candidate: QueryCandidate;
+  t: Translate;
+}) {
+  const hasEvidence = candidate.evidence_papers.length > 0;
+  return (
+    <div className="evidence-direction__evidence">
+      <span className="evidence-direction__evidence-label">
+        <BookOpen size={13} aria-hidden="true" />
+        {hasEvidence ? t("chooser.evidenceLabel") : t("chooser.methodLabel")}
+      </span>
+      {hasEvidence ? (
+        candidate.evidence_papers.slice(0, 2).map((paper) => {
+          const url = safeLink(paper.url);
+          return (
+            <div className="evidence-direction__source" key={paper.id}>
+              {url ? (
+                <a
+                  className="evidence-direction__source-link"
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {paper.title}
+                  <ArrowUpRight size={12} aria-hidden="true" />
+                </a>
+              ) : (
+                <span className="evidence-direction__source-name">
+                  {paper.title}
+                </span>
+              )}
+              <small>{paper.year ?? t("evidence.yearUnavailable")}</small>
+            </div>
+          );
+        })
+      ) : (
+        <p className="evidence-direction__source evidence-direction__source-name">
+          {t("chooser.noSavedMatches")}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function DirectionChooser({
   resolution,
   onChoose,
@@ -21,85 +79,85 @@ export function DirectionChooser({
   onChoose: (candidate: QueryCandidate) => void;
   onDismiss: () => void;
 }) {
+  const { t } = useTranslation("results");
   return (
-    <section className="direction-panel" aria-labelledby="direction-title">
-      <div className="direction-heading">
+    <section className="evidence-direction" aria-labelledby="direction-title">
+      <div className="evidence-direction__heading">
         <div>
-          <span className="eyebrow">
-            <Compass size={14} /> 确认研究范围
+          <span className="evidence-direction__eyebrow">
+            <Compass size={14} aria-hidden="true" />
+            {t("chooser.eyebrow")}
           </span>
           <h2 id="direction-title">
             {resolution.status === "clarify"
-              ? "再补充一点背景，会更准确"
-              : "哪一个方向更接近你的问题？"}
+              ? t("chooser.titleClarify")
+              : t("chooser.titleChoose")}
           </h2>
         </div>
         <button
-          className="icon-button"
+          type="button"
+          className="evidence-direction__dismiss"
           onClick={onDismiss}
-          aria-label="关闭方向选择"
+          aria-label={t("chooser.dismiss")}
         >
-          <X size={19} />
+          <X size={18} aria-hidden="true" />
         </button>
       </div>
-      <p>{resolution.message}</p>
+      <p className="evidence-direction__message">{resolution.message}</p>
       {resolution.status === "clarify" ? (
-        <div className="clarify-hint">
-          <MessageCircle size={19} />
+        <div className="evidence-direction__clarify">
+          <MessageCircle size={19} aria-hidden="true" />
           <div>
-            <strong>可以补充材料、现象或你想解决的问题</strong>
-            <p>
-              例如把“KTO”写成“KTaO₃
-              氧化物界面的超导，想了解相关研究方向”。也可以输入明确的英文领域名称。
+            <strong>{t("chooser.clarifyTitle")}</strong>
+            <p className="evidence-direction__clarify-copy">
+              {t("chooser.clarifyCopy")}
             </p>
           </div>
         </div>
-      ) : (
+      ) : resolution.candidates.length ? (
         <>
-          <div className="direction-candidates">
+          <div
+            className="evidence-direction__candidates"
+            aria-label={t("chooser.ariaCandidates")}
+          >
             {resolution.candidates.map((candidate, index) => (
-              <article key={candidate.query} className="direction-card">
-                <span className="candidate-number">
-                  方向 {String(index + 1).padStart(2, "0")}
+              <article
+                key={candidate.query}
+                className="evidence-direction__card"
+              >
+                <span className="evidence-direction__number">
+                  {t("chooser.candidateNumber", {
+                    number: String(index + 1).padStart(2, "0"),
+                  })}
                 </span>
                 <h3>{candidate.name}</h3>
-                <span className="candidate-query">{candidate.query}</span>
-                <p>{candidate.summary}</p>
-                <div className="candidate-evidence">
-                  <span>
-                    <BookOpen size={12} />{" "}
-                    {candidate.evidence_papers.length
-                      ? "检索匹配论文"
-                      : "直接关键词检索"}
-                  </span>
-                  {candidate.evidence_papers.slice(0, 2).map((paper) => (
-                    <div key={paper.id}>
-                      {safeLink(paper.url) ? (
-                        <a
-                          href={safeLink(paper.url)}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {paper.title}
-                        </a>
-                      ) : (
-                        <span>{paper.title}</span>
-                      )}
-                      <small>{paper.year ?? "年份未提供"}</small>
-                    </div>
-                  ))}
-                </div>
-                <button className="primary" onClick={() => onChoose(candidate)}>
-                  用这个方向构建地图
-                  <ArrowRight size={15} />
+                <span className="evidence-direction__query">
+                  {t("chooser.queryLabel")}
+                  {candidate.query}
+                </span>
+                <p className="evidence-direction__summary">
+                  {candidate.summary}
+                </p>
+                <CandidateEvidence candidate={candidate} t={t} />
+                <button
+                  type="button"
+                  className="evidence-direction__choose"
+                  onClick={() => onChoose(candidate)}
+                >
+                  {t("chooser.choose")}
+                  <ArrowRight size={15} aria-hidden="true" />
                 </button>
               </article>
             ))}
           </div>
-          <p className="direction-note">
-            方向是分析建议，论文匹配不等于原文已经证实该范围。请按你的研究意图选择；不合适时可改写问题。
-          </p>
+          <p className="evidence-direction__note">{t("chooser.note")}</p>
         </>
+      ) : (
+        <div className="evidence-direction__empty">
+          <BookOpen size={25} aria-hidden="true" />
+          <h3>{t("chooser.emptyTitle")}</h3>
+          <p>{t("chooser.emptyCopy")}</p>
+        </div>
       )}
     </section>
   );

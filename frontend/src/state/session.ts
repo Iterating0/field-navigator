@@ -1,3 +1,4 @@
+import { normalizeLanguage } from "../types/index.ts";
 import type {
   ClaimLevel,
   CorePaperBasis,
@@ -6,15 +7,16 @@ import type {
   EvidenceQuoteSource,
   EvidenceStatus,
   FieldNode,
+  Language,
   Mode,
   Paper,
-} from "../types";
+} from "../types/index.ts";
 
 /** Versioned local session key. The legacy key is read only for migration. */
 export const SESSION_STORAGE_KEY = "field-navigator-session-v2";
 export const LEGACY_SESSION_STORAGE_KEY = "field-navigator-session-v1";
 /** Bump when recommendation/evidence semantics change. */
-export const CURRENT_QUALITY_REVISION = 10;
+export const CURRENT_QUALITY_REVISION = 28;
 
 export type PaperSource = FieldNode["paper_source"];
 export type AnalysisSource = FieldNode["analysis_source"];
@@ -27,6 +29,8 @@ export interface HistoryEntry {
   created_at?: string;
   paper_source?: PaperSource;
   analysis_source?: AnalysisSource;
+  /** Language of the saved result; legacy records default to zh-CN. */
+  language?: Language;
 }
 
 /**
@@ -40,6 +44,8 @@ export interface Session {
   current: string;
   current_research_question?: string;
   mode: Mode;
+  /** Language of the current result, when known. Legacy sessions default to zh-CN. */
+  current_language?: Language;
   snapshots: Record<string, FieldNode>;
   trail: string[];
   /** Original-question context for trail positions; absent entries mean none. */
@@ -115,8 +121,12 @@ const requestKey = (
   name: string,
   mode: Mode,
   researchQuestion?: string | null,
+  language: Language = "zh-CN",
 ) => {
-  const base = `${mode}:${normalizeField(name)}`;
+  const requestLanguage = normalizeLanguage(language);
+  const base = `${mode}:${normalizeField(name)}${
+    requestLanguage === "en" ? ":lang:en" : ""
+  }`;
   const question = normalizeResearchQuestion(researchQuestion);
   return question ? `${base}:q:${encodeURIComponent(question)}` : base;
 };
@@ -342,6 +352,9 @@ export function sanitizeFieldNode(value: unknown): FieldNode | null {
         : 0,
     research_question:
       normalizeResearchQuestion(value.research_question) ?? null,
+    // Old snapshots had no marker and are treated as the original Chinese
+    // contract. Explicit English snapshots remain isolated by their key.
+    language: normalizeLanguage(value.language),
   };
   field.evidence_papers = evidencePapers;
   return field;
@@ -369,6 +382,7 @@ function sanitizeHistoryEntry(
     entry.paper_source = value.paper_source as PaperSource;
   if (ANALYSIS_SOURCES.includes(value.analysis_source as AnalysisSource))
     entry.analysis_source = value.analysis_source as AnalysisSource;
+  entry.language = normalizeLanguage(value.language);
   return entry;
 }
 
@@ -379,37 +393,56 @@ function sanitizeHistory(value: unknown, fallbackMode: Mode): HistoryEntry[] {
     const entry = sanitizeHistoryEntry(item, fallbackMode);
     if (!entry) continue;
     entries.set(
-      requestKey(entry.name, entry.mode, entry.research_question),
+      requestKey(
+        entry.name,
+        entry.mode,
+        entry.research_question,
+        entry.language,
+      ),
       entry,
     );
   }
   return [...entries.values()].slice(-50);
 }
 
-function parseSnapshotMode(key: string): Mode | null {
+function parseSnapshotKey(
+  key: string,
+): { mode: Mode; language: Language } | null {
   const separator = key.indexOf(":");
   if (separator <= 0) return null;
   const mode = key.slice(0, separator);
-  return isMode(mode) ? mode : null;
+  if (!isMode(mode)) return null;
+  return {
+    mode,
+    language: key.includes(":lang:en") ? "en" : "zh-CN",
+  };
 }
 
 function sanitizeSnapshots(value: unknown): Record<string, FieldNode> {
   if (!isRecord(value)) return {};
   const snapshots = new Map<string, FieldNode>();
   for (const [rawKey, rawField] of Object.entries(value)) {
-    const mode = parseSnapshotMode(rawKey);
-    if (!mode) continue;
+    const parsedKey = parseSnapshotKey(rawKey);
+    if (!parsedKey) continue;
     const field = sanitizeFieldNode(rawField);
     if (!field || field.phase !== "complete") continue;
     // A live/automatic snapshot created before the evidence audit must not
     // shadow a fresh backend result. Keep demo snapshots readable for offline
     // use, while requiring the current quality contract for live data.
     if (
-      mode !== "demo" &&
+      parsedKey.mode !== "demo" &&
       (field.quality_revision ?? 0) < CURRENT_QUALITY_REVISION
     )
       continue;
-    snapshots.set(requestKey(field.name, mode, field.research_question), field);
+    const language =
+      isRecord(rawField) && rawField.language !== undefined
+        ? (field.language ?? parsedKey.language)
+        : parsedKey.language;
+    if (field.language !== language) field.language = language;
+    snapshots.set(
+      requestKey(field.name, parsedKey.mode, field.research_question, language),
+      field,
+    );
   }
   return Object.fromEntries([...snapshots.entries()].slice(-8));
 }
@@ -439,6 +472,10 @@ function normalizeSessionRecord(
   if (value.history !== undefined && !Array.isArray(value.history)) return null;
   const mode = modeOr(value.mode, fallbackMode);
   const trailContexts = sanitizeTrailContexts(value.trail_contexts);
+  const currentLanguage =
+    value.current_language === undefined
+      ? undefined
+      : normalizeLanguage(value.current_language);
   return {
     history: sanitizeHistory(value.history, mode),
     current: typeof value.current === "string" ? value.current : "",
@@ -450,6 +487,7 @@ function normalizeSessionRecord(
         }
       : {}),
     mode,
+    ...(currentLanguage ? { current_language: currentLanguage } : {}),
     snapshots: sanitizeSnapshots(value.snapshots),
     trail: sanitizeTrail(value.trail),
     ...(Object.keys(trailContexts).length
@@ -511,6 +549,7 @@ export function saveSession(
         current: candidate.current,
         current_research_question: candidate.current_research_question,
         mode,
+        current_language: candidate.current_language,
         snapshots: candidate.snapshots,
         trail: candidate.trail,
         trail_contexts: candidate.trail_contexts,

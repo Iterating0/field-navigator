@@ -11,9 +11,11 @@
   },
   "dependencies": {
     "@xyflow/react": "^12.8.0",
+    "i18next": "^26.4.5",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-i18next": "^17.0.16"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",

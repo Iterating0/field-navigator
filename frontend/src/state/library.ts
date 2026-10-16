@@ -1,4 +1,5 @@
-import type { CorePaper, Paper } from "../types";
+import type { CorePaper, Language, Paper } from "../types/index.ts";
+import { exportDate, exportLabels } from "../locales/exports.ts";
 
 export const LIBRARY_STORAGE_KEY = "field-navigator-reading-library-v1";
 export const MAX_LIBRARY_ITEMS = 100;
@@ -659,6 +660,23 @@ export function removeLibraryItem(
   return items.filter((item) => item.id !== id);
 }
 
+/** Undo a local removal without replacing a newer copy or evicting another paper. */
+export function restoreLibraryItem(
+  items: SavedPaper[],
+  removed: SavedPaper,
+  originalIndex = 0,
+): SavedPaper[] {
+  if (
+    items.length >= MAX_LIBRARY_ITEMS ||
+    isSavedPaper(removed.paper, getSavedPaperIds(items))
+  )
+    return items;
+  const index = Number.isFinite(originalIndex)
+    ? Math.min(items.length, Math.max(0, Math.trunc(originalIndex)))
+    : 0;
+  return [...items.slice(0, index), removed, ...items.slice(index)];
+}
+
 export function clearLibrary(): SavedPaper[] {
   return [];
 }
@@ -728,12 +746,22 @@ function markdownUrl(value: string): string {
 }
 
 /** Export paper metadata and notes only; no model settings or network calls. */
-export function exportLibraryMarkdown(items: SavedPaper[]): string {
+export function exportLibraryMarkdown(
+  items: SavedPaper[],
+  language: Language = "zh-CN",
+): string {
+  const labels = exportLabels(language);
+  const labelColon = language === "en" ? ": " : "：";
   const normalized = normalizeLibrary(items);
-  const lines = ["# 阅读清单", "", `导出时间：${new Date().toISOString()}`, ""];
+  const lines = [
+    `# ${labels.readingList}`,
+    "",
+    `${labels.exportedAt}${labelColon}${new Date().toISOString()}`,
+    "",
+  ];
   for (const [status, heading] of [
-    ["to-read", "待读"],
-    ["read", "已读"],
+    ["to-read", labels.toRead],
+    ["read", labels.read],
   ] as const) {
     const group = normalized.filter((item) => item.status === status);
     if (!group.length) continue;
@@ -745,25 +773,33 @@ export function exportLibraryMarkdown(items: SavedPaper[]): string {
         url ? `### [${title}](<${markdownUrl(url)}>)` : `### ${title}`,
       );
       lines.push(
-        `- 作者：${escapeMarkdown(item.paper.authors.map(oneLine).join(", ") || "未提供")}`,
-        `- 年份：${item.paper.year ?? "未知"}`,
-        `- 期刊：${escapeMarkdown(oneLine(item.paper.journal || "未提供"))}`,
-        `- DOI：${item.paper.doi ? `\`${escapeMarkdown(normalizeDoi(item.paper.doi))}\`` : "未提供"}`,
+        `- ${labels.authors}${labelColon}${escapeMarkdown(item.paper.authors.map(oneLine).join(", ") || (language === "en" ? "Not provided" : "未提供"))}`,
+        `- ${labels.year}${labelColon}${item.paper.year ?? labels.unknown}`,
+        `- ${labels.journal}${labelColon}${escapeMarkdown(oneLine(item.paper.journal || (language === "en" ? "Not provided" : "未提供")))}`,
+        `- ${labels.doi}${labelColon}${item.paper.doi ? `\`${escapeMarkdown(normalizeDoi(item.paper.doi))}\`` : language === "en" ? "Not provided" : "未提供"}`,
       );
       if (item.fields.length) {
         lines.push(
-          `- 所属领域：${item.fields.map((field) => escapeMarkdown(oneLine(field))).join("、")}`,
+          `- ${labels.fields}${labelColon}${item.fields.map((field) => escapeMarkdown(oneLine(field))).join(language === "en" ? ", " : "、")}`,
         );
-        lines.push(`- 建议理由：${escapeMarkdown(item.reason)}`);
+      }
+      if (item.reason) {
+        lines.push(
+          `- ${labels.reason}${labelColon}${escapeMarkdown(item.reason)}`,
+        );
       }
       if (item.note) {
-        lines.push("- 个人笔记：");
+        lines.push(`- ${labels.note}${labelColon}`);
         for (const line of item.note.split(/\r?\n/))
           lines.push(`  > ${escapeMarkdown(line) || " "}`);
       }
+      if (item.saved_at)
+        lines.push(
+          `- ${labels.savedAt}${labelColon}${exportDate(item.saved_at)}`,
+        );
       lines.push("");
     }
   }
-  if (!normalized.length) lines.push("清单为空。", "");
+  if (!normalized.length) lines.push(labels.empty, "");
   return lines.join("\n");
 }

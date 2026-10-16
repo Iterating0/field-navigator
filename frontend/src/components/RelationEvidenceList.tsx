@@ -1,40 +1,35 @@
-import {
-  ArrowRight,
-  ArrowUpRight,
-  BookOpen,
-  ChevronDown,
-  GitBranch,
-  Layers,
-} from "lucide-react";
+import { ArrowRight, ArrowUpRight, BookOpen, ChevronDown } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { FieldNode, FieldRelation, Paper } from "../types";
-import { abstractProvenanceLabel } from "../state/provenance";
+import "./evidence.css";
 
-function evidenceStatus(relation: FieldRelation) {
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+function evidenceStatus(relation: FieldRelation, t: Translate) {
   if (relation.evidence_status === "supported")
-    return { label: "摘要支持 · 自动核对", className: "supported" };
+    return { label: t("evidence.statusSupported"), className: "supported" };
   if (relation.evidence_status === "weak")
-    return { label: "线索有限", className: "weak" };
-  return { label: "待核对", className: "unverified" };
+    return { label: t("evidence.statusWeak"), className: "weak" };
+  return { label: t("evidence.statusUnverified"), className: "unverified" };
 }
 
-function claimLevel(relation: FieldRelation) {
+function claimLevel(relation: FieldRelation, t: Translate) {
   if (relation.claim_level === "theory_or_proposed")
     return {
-      label: "理论 / 候选解释",
+      label: t("evidence.claimTheory"),
       className: "theory",
-      title:
-        "文献覆盖该研究方向，但这里是理论或候选解释，不代表全文验证或机制定论",
+      title: t("evidence.claimTheoryTitle"),
     };
   if (relation.claim_level === "title_only")
     return {
-      label: "仅题名线索",
+      label: t("evidence.claimTitleOnly"),
       className: "title-only",
-      title: "目前只有题名级线索，不能确认研究方向，更不能确认机制",
+      title: t("evidence.claimTitleOnlyTitle"),
     };
   return {
-    label: "文献覆盖方向",
+    label: t("evidence.claimDirection"),
     className: "direction",
-    title: "有文献覆盖该研究方向；不代表全文验证或机制定论",
+    title: t("evidence.claimDirectionTitle"),
   };
 }
 
@@ -54,17 +49,118 @@ function safeLink(url: string | null) {
   }
 }
 
+function provenanceLabel(paper: Paper, t: Translate) {
+  try {
+    const record = new URL(paper.abstract_source_record_id ?? "");
+    if (
+      record.hostname === "api.datacite.org" &&
+      record.pathname.startsWith("/dois/")
+    )
+      return t("evidence.provenanceDatacite");
+    if (record.hostname === "arxiv.org" && record.pathname.startsWith("/abs/"))
+      return t("evidence.provenanceArxiv");
+  } catch {
+    // An index alias can identify a version without being a URL.
+  }
+  return t("evidence.provenanceIndependent");
+}
+
+function RelationSource({
+  paper,
+  relation,
+  t,
+}: {
+  paper: Paper;
+  relation: FieldRelation;
+  t: Translate;
+}) {
+  const url = safeLink(paper.url);
+  const quotes = (relation.evidence_quotes ?? [])
+    .filter((quote) => quote.paper_id === paper.id)
+    .slice(0, 2);
+  return (
+    <div className="evidence-source">
+      {url ? (
+        <a
+          className="evidence-source__title"
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {paper.title}
+          <ArrowUpRight size={12} aria-hidden="true" />
+        </a>
+      ) : (
+        <span className="evidence-source__title">{paper.title}</span>
+      )}
+      <small className="evidence-source__meta">
+        {paper.year ?? t("evidence.yearUnknown")} ·{" "}
+        {paper.journal || t("evidence.sourceUnavailable")}
+      </small>
+      {quotes.length ? (
+        quotes.map((quote, index) => (
+          <p
+            className="evidence-source__quote"
+            key={`${paper.id}:quote:${index}`}
+          >
+            <span className="evidence-source__quote-label">
+              {quote.source === "abstract"
+                ? t("evidence.quoteAbstract")
+                : t("evidence.quoteTitle")}
+            </span>
+            “{quote.quote}”
+          </p>
+        ))
+      ) : paper.abstract ? (
+        <>
+          <p className="evidence-source__quote evidence-source__quote--unverified">
+            <span className="evidence-source__quote-label">
+              {t("evidence.quoteMetadataAbstract")}
+            </span>
+            “{shortText(paper.abstract)}”
+          </p>
+          {paper.abstract_source_record_id &&
+            paper.abstract_source_record_id !== paper.id && (
+              <small className="evidence-source__provenance">
+                {provenanceLabel(paper, t)}
+              </small>
+            )}
+        </>
+      ) : (
+        <p className="evidence-source__quote evidence-source__quote--unverified">
+          <span className="evidence-source__quote-label">
+            {t("evidence.noAbstractEvidence")}
+          </span>
+          {t("evidence.noAbstractEvidenceCopy")}
+        </p>
+      )}
+      {paper.abstract_source_record_id &&
+        paper.abstract_source_record_id !== paper.id &&
+        relation.evidence_quotes?.some(
+          (quote) => quote.paper_id === paper.id && quote.source === "abstract",
+        ) && (
+          <small className="evidence-source__provenance">
+            {provenanceLabel(paper, t)}
+          </small>
+        )}
+    </div>
+  );
+}
+
 export function RelationEvidenceList({
   field,
   kind,
   minConfidence,
   onExplore,
+  onResetFilters,
 }: {
   field: FieldNode;
   kind: "subfields" | "prerequisites";
   minConfidence: number;
   onExplore: (name: string) => void;
+  onResetFilters?: () => void;
 }) {
+  const { t } = useTranslation("results");
   const relations = field[kind].filter(
     (relation) => relation.confidence >= minConfidence,
   );
@@ -79,157 +175,110 @@ export function RelationEvidenceList({
       .map((id) => evidence.get(id))
       .filter((paper): paper is Paper => Boolean(paper));
   }
+
   return (
-    <div className="relation-evidence-list">
+    <div className="evidence-relations">
       {relations.length ? (
-        relations.map((relation) => (
-          <article className="relation-evidence-card" key={relation.name}>
-            <div className="relation-card-title">
-              <span
-                className={`relation-kind ${kind === "subfields" ? "branch" : "pre"}`}
-              >
-                {kind === "subfields" ? (
-                  <GitBranch size={15} />
-                ) : (
-                  <Layers size={15} />
-                )}
-              </span>
-              <h3>{relation.name}</h3>
-              <small>
-                {field.analysis_source === "mock"
-                  ? "预设示例关系"
-                  : "模型推断关系"}
-              </small>
-              {field.analysis_source !== "mock" && (
-                <span
-                  className={`evidence-status ${evidenceStatus(relation).className}`}
-                  title="自动核对只说明文献与研究方向相关；不代表全文验证或机制定论"
-                >
-                  {evidenceStatus(relation).label}
-                </span>
-              )}
-              <span
-                className={`claim-level-badge ${claimLevel(relation).className}`}
-                title={claimLevel(relation).title}
-              >
-                {claimLevel(relation).label}
-              </span>
-            </div>
-            <p>{relation.reason}</p>
-            <div className="relation-card-actions">
-              <details className="relation-evidence-details">
-                <summary>
-                  <BookOpen size={13} />
-                  {relation.evidence_paper_ids.length} 篇支持书目
-                  <ChevronDown size={13} />
-                </summary>
-                <div>
-                  {sources(relation).length ? (
-                    sources(relation).map((paper) => (
-                      <div className="relation-source" key={paper.id}>
-                        {safeLink(paper.url) ? (
-                          <a
-                            href={safeLink(paper.url)}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            {paper.title}
-                            <ArrowUpRight size={12} />
-                          </a>
-                        ) : (
-                          <span>{paper.title}</span>
-                        )}
-                        <small>
-                          {paper.year ?? "年份未知"} ·{" "}
-                          {paper.journal || "来源未提供"}
-                        </small>
-                        {(() => {
-                          const quotes = (relation.evidence_quotes ?? [])
-                            .filter((quote) => quote.paper_id === paper.id)
-                            .slice(0, 2);
-                          if (quotes.length)
-                            return quotes.map((quote, index) => (
-                              <p
-                                className="evidence-quote"
-                                key={`${paper.id}:quote:${index}`}
-                              >
-                                <span>
-                                  {quote.source === "abstract"
-                                    ? "摘要摘录"
-                                    : "标题线索"}
-                                </span>
-                                “{shortText(quote.quote)}”
-                              </p>
-                            ));
-                          return paper.abstract ? (
-                            <>
-                              <p className="evidence-quote evidence-quote-unverified">
-                                <span>摘要元数据摘录 · 待核对</span>“
-                                {shortText(paper.abstract)}”
-                              </p>
-                              {paper.abstract_source_record_id &&
-                                paper.abstract_source_record_id !==
-                                  paper.id && (
-                                  <small className="evidence-provenance-note">
-                                    {abstractProvenanceLabel(paper)}
-                                  </small>
-                                )}
-                            </>
-                          ) : (
-                            <p className="evidence-quote evidence-quote-unverified">
-                              <span>暂无摘要证据</span>
-                              这条书目只能作为检索线索，不能确证该关系。
-                            </p>
-                          );
-                        })()}
-                        {paper.abstract_source_record_id &&
-                          paper.abstract_source_record_id !== paper.id &&
-                          relation.evidence_quotes?.some(
-                            (quote) =>
-                              quote.paper_id === paper.id &&
-                              quote.source === "abstract",
-                          ) && (
-                            <small className="evidence-provenance-note">
-                              {abstractProvenanceLabel(paper)}
-                            </small>
-                          )}
-                      </div>
-                    ))
-                  ) : (
-                    <p>
-                      当前记录未保存完整支持书目；可以重新分析补充。模型关系仍需核对原文。
-                    </p>
+        relations.map((relation) => {
+          const status = evidenceStatus(relation, t);
+          const level = claimLevel(relation, t);
+          const relationSources = sources(relation);
+          return (
+            <article className="evidence-relation" key={relation.name}>
+              <div className="evidence-relation__button">
+                <h3 className="evidence-relation__title">
+                  <span>
+                    {relation.name}
+                    <span className="evidence-relation__reason">
+                      {relation.reason}
+                    </span>
+                  </span>
+                </h3>
+                <span className="evidence-relation__meta">
+                  <span className="evidence-relation__meta-text">
+                    {field.analysis_source === "mock"
+                      ? t("evidence.relationSourceDemo")
+                      : t("evidence.relationSourceModel")}
+                  </span>
+                  {field.analysis_source !== "mock" && (
+                    <span
+                      className={`evidence-relation__status evidence-relation__status--${status.className}`}
+                      title={t("evidence.boundary")}
+                    >
+                      {status.label}
+                    </span>
                   )}
-                  <p className="evidence-boundary">
-                    自动核对只说明标题/摘要与该研究方向相关；没有全文验证，也不等于机制定论。
-                    {relation.evidence_warnings?.length
-                      ? ` ${relation.evidence_warnings.join(" ")}`
-                      : ""}
-                  </p>
-                </div>
-              </details>
-              <button
-                className="text-button"
-                onClick={() => onExplore(relation.name)}
-              >
-                探索这个方向
-                <ArrowRight size={14} />
-              </button>
-            </div>
-          </article>
-        ))
+                  <span
+                    className="evidence-relation__claim"
+                    title={level.title}
+                  >
+                    {level.label}
+                  </span>
+                </span>
+              </div>
+              <div className="evidence-relation__actions">
+                <details className="evidence-relation__details">
+                  <summary>
+                    <span>
+                      <BookOpen size={13} aria-hidden="true" />
+                      {relation.evidence_paper_ids.length
+                        ? t("evidence.supportingPapers", {
+                            count: relation.evidence_paper_ids.length,
+                          })
+                        : t("evidence.supportingPapersNone")}
+                    </span>
+                    <ChevronDown size={13} aria-hidden="true" />
+                  </summary>
+                  <div>
+                    {relationSources.length ? (
+                      relationSources.map((paper) => (
+                        <RelationSource
+                          key={paper.id}
+                          paper={paper}
+                          relation={relation}
+                          t={t}
+                        />
+                      ))
+                    ) : (
+                      <p>{t("evidence.incompleteSources")}</p>
+                    )}
+                    <p className="evidence-relation__boundary">
+                      {t("evidence.boundary")}
+                      {relation.evidence_warnings?.length
+                        ? ` ${relation.evidence_warnings.join(" ")}`
+                        : ""}
+                    </p>
+                  </div>
+                </details>
+                <button
+                  type="button"
+                  className="evidence-relation__explore"
+                  onClick={() => onExplore(relation.name)}
+                >
+                  {t("evidence.explore")}
+                  <ArrowRight size={14} aria-hidden="true" />
+                </button>
+              </div>
+            </article>
+          );
+        })
       ) : (
-        <div className="empty-relations">
-          <BookOpen size={26} />
+        <div className="evidence-relations__empty">
+          <BookOpen size={26} aria-hidden="true" />
           <h3>
             {field.phase !== "complete"
-              ? "可以先从已有论文开始"
-              : "当前没有符合筛选条件的关系"}
+              ? t("evidence.emptyBefore")
+              : t("evidence.emptyFiltered")}
           </h3>
+          {minConfidence > 0 && field[kind].length > 0 && onResetFilters && (
+            <button className="secondary-button" onClick={onResetFilters}>
+              {t("evidence.resetFilter")}
+            </button>
+          )}
           <p>
             {field.phase !== "complete"
-              ? "领域分析尚未完成。论文出处和收藏功能仍可使用。"
-              : "减少筛选强度，或尝试更明确的研究范围；没有依据时不会补造研究分支。"}
+              ? t("evidence.pendingNotice")
+              : t("evidence.emptyNotice")}
           </p>
         </div>
       )}

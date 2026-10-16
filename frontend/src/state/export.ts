@@ -7,19 +7,24 @@ import type {
   EvidenceStatus,
   FieldNode,
   Paper,
-} from "../types";
+  Language,
+} from "../types/index.ts";
+import { exportLabels } from "../locales/exports.ts";
 
 export const MAP_EXPORT_VERSION = 1;
 
 type EvidencePaper = Paper & { referenced_works?: string[] };
 
-const LIMITATIONS = [
-  "排序只在本次候选集内比较（heuristic），不是系统综述。",
-  "置信度未校准，不能替代人工核验。",
-  "论文条目是可追溯的元数据，不等同于全文或原文引用。",
-  "证据层级由标题/摘要字段自动核对；短摘录不是全文验证。",
-  "关系成熟度表示文献覆盖层级，不代表全文验证或机制定论。",
-];
+function limitations(language: Language): string[] {
+  const labels = exportLabels(language);
+  return [
+    labels.heuristicLimit,
+    labels.confidenceLimit,
+    labels.metadataLimit,
+    labels.evidenceLimit,
+    labels.maturityLimit,
+  ];
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -253,6 +258,7 @@ function sanitizeField(value: unknown): FieldNode | null {
       typeof value.research_question === "string"
         ? value.research_question.trim().slice(0, 1000)
         : null,
+    language: value.language === "en" ? "en" : "zh-CN",
   };
   if (evidencePapers.length) field.evidence_papers = evidencePapers;
   return field;
@@ -292,18 +298,21 @@ function markdownLink(label: unknown, url: unknown): string {
   return `[${escapeMarkdown(label)}](<${safe}>)`;
 }
 
-function sourceLabel(field: FieldNode): string {
-  const paper = field.paper_source === "openalex" ? "OpenAlex" : "demo 数据";
+function sourceLabel(field: FieldNode, language: Language): string {
+  const labels = exportLabels(language);
+  const paper =
+    field.paper_source === "openalex" ? "OpenAlex" : labels.demoData;
   const analysis =
     field.analysis_source === "llm"
-      ? "LLM 分析"
+      ? labels.llmAnalysis
       : field.analysis_source === "mock"
-        ? "mock 分析"
-        : "待分析";
-  return `${paper}；${analysis}`;
+        ? labels.mockAnalysis
+        : labels.pendingAnalysis;
+  return labels.sourceSummary(paper, analysis);
 }
 
-function rangeLabel(field: FieldNode): string {
+function rangeLabel(field: FieldNode, language: Language): string {
+  const labels = exportLabels(language);
   const candidate = Number.isFinite(field.candidate_count)
     ? Math.max(0, Math.floor(field.candidate_count))
     : 0;
@@ -312,70 +321,82 @@ function rangeLabel(field: FieldNode): string {
     Number.isFinite(field.analyzed_paper_count)
       ? Math.max(0, Math.floor(field.analyzed_paper_count))
       : null;
-  return analyzed === null
-    ? `${candidate} 篇候选论文`
-    : `${candidate} 篇候选论文，分析了 ${analyzed} 篇`;
+  return labels.candidateRange(candidate, analyzed);
 }
 
-function confidenceLabel(value: unknown): string {
+function confidenceLabel(value: unknown, language: Language): string {
+  const labels = exportLabels(language);
   return typeof value === "number" && Number.isFinite(value)
     ? `${Math.round(Math.min(1, Math.max(0, value)) * 100)}%`
-    : "未知";
+    : labels.unknown;
 }
 
-function evidenceStatusLabel(value: unknown): string {
-  if (value === "supported") return "摘要支持 · 自动核对";
-  if (value === "weak") return "线索有限";
-  return "待核对";
+function evidenceStatusLabel(value: unknown, language: Language): string {
+  const labels = exportLabels(language);
+  if (value === "supported") return labels.supported;
+  if (value === "weak") return labels.weak;
+  return labels.toVerify;
 }
 
-function claimLevelLabel(value: unknown): string {
-  if (value === "theory_or_proposed") return "理论 / 候选解释";
-  if (value === "title_only") return "仅题名线索";
-  return "文献覆盖方向";
+function claimLevelLabel(value: unknown, language: Language): string {
+  const labels = exportLabels(language);
+  if (value === "theory_or_proposed") return labels.theoryCandidate;
+  if (value === "title_only") return labels.titleOnly;
+  return labels.researchDirection;
 }
 
-function evidenceBasisLabel(value: unknown): string {
-  if (value === "abstract") return "摘要证据";
-  if (value === "title") return "标题线索";
-  return "待核对";
+function evidenceBasisLabel(value: unknown, language: Language): string {
+  const labels = exportLabels(language);
+  if (value === "abstract") return labels.abstractEvidence;
+  if (value === "title") return labels.titleClue;
+  return labels.toVerify;
 }
 
-function roleLabel(value: unknown): string {
-  if (value === "primary") return "原始研究";
-  if (value === "review") return "综述导读";
-  if (value === "background") return "背景材料";
-  if (value === "non_research") return "非研究条目";
-  return "角色待核对";
+function roleLabel(value: unknown, language: Language): string {
+  const labels = exportLabels(language);
+  if (value === "primary") return labels.primary;
+  if (value === "review") return labels.review;
+  if (value === "background") return labels.background;
+  if (value === "non_research") return labels.nonResearch;
+  return labels.roleToVerify;
 }
 
-function relationLines(relations: FieldNode["prerequisites"]): string[] {
-  if (!relations.length) return ["- 未返回可追溯条目。"];
+function relationLines(
+  relations: FieldNode["prerequisites"],
+  language: Language,
+): string[] {
+  const labels = exportLabels(language);
+  if (!relations.length) return [`- ${labels.noTraceablePapers}`];
   return relations.map((relation) => {
     const evidence = relation.evidence_paper_ids?.filter(Boolean) ?? [];
     const evidenceLabel = evidence.length
-      ? `；证据元数据：${evidence
-          .map((id) => `\`${escapeCode(id)}\``)
-          .join(", ")}`
+      ? `；${labels.evidenceMetadata(
+          evidence.map((id) => `\`${escapeCode(id)}\``).join(", "),
+        )}`
       : "";
-    const status = `；证据层级：${evidenceStatusLabel(
-      relation.evidence_status,
+    const status = `；${labels.evidence(
+      evidenceStatusLabel(relation.evidence_status, language),
     )}`;
-    const claimLevel = `；成熟度：${claimLevelLabel(relation.claim_level)}`;
+    const claimLevel = `；${labels.maturity(
+      claimLevelLabel(relation.claim_level, language),
+    )}`;
     const quotes = (relation.evidence_quotes ?? [])
       .filter((item) => item.quote.trim())
       .slice(0, 2)
       .map(
         (item) =>
-          `；${item.source === "abstract" ? "摘要" : "标题"}摘录：“${escapeMarkdown(
-            item.quote,
-          )}”`,
+          `；${labels.excerpt(
+            item.source === "abstract"
+              ? labels.abstractEvidence
+              : labels.titleClue,
+            escapeMarkdown(item.quote),
+          )}`,
       )
       .join("");
     return `- **${escapeMarkdown(relation.name)}** — ${escapeMarkdown(
       relation.reason,
-    )}（置信度 ${confidenceLabel(
-      relation.confidence,
+    )}（${labels.confidence(
+      confidenceLabel(relation.confidence, language),
     )}${claimLevel}${status}${evidenceLabel}${quotes}）`;
   });
 }
@@ -384,33 +405,49 @@ function paperTitle(paper: Paper): string {
   return markdownLink(paper.title, paper.url);
 }
 
-function paperMetadata(paper: Paper): string {
+function paperMetadata(paper: Paper, language: Language): string {
+  const labels = exportLabels(language);
   const evidence = paper as EvidencePaper;
   const parts: string[] = [];
   if (typeof paper.year === "number" && Number.isFinite(paper.year))
     parts.push(String(Math.trunc(paper.year)));
   if (paper.journal) parts.push(escapeMarkdown(paper.journal));
-  if (paper.source) parts.push(`来源 ${escapeMarkdown(paper.source)}`);
+  if (paper.source)
+    parts.push(`${labels.source} ${escapeMarkdown(paper.source)}`);
   if (paper.id) parts.push(`id \`${escapeCode(paper.id)}\``);
   if (typeof evidence.abstract === "string")
-    parts.push("摘要仅作为元数据字段，未展开为全文");
-  return parts.join("；") || "元数据不完整";
+    parts.push(labels.abstractMetadata);
+  return parts.join("；") || labels.metadataIncomplete;
 }
 
-function paperLine(item: FieldNode["core_papers"][number]): string {
+function paperLine(
+  item: FieldNode["core_papers"][number],
+  language: Language,
+): string {
+  const labels = exportLabels(language);
   const score =
     typeof item.score === "number" && Number.isFinite(item.score)
-      ? `；候选集评分 ${Math.round(Math.min(1, Math.max(0, item.score)) * 100)}%`
+      ? `；${labels.candidateScore(
+          `${Math.round(Math.min(1, Math.max(0, item.score)) * 100)}%`,
+        )}`
       : "";
   const reason = item.reason ? `；${escapeMarkdown(item.reason)}` : "";
-  const basis = `；证据层级 ${evidenceBasisLabel(item.evidence_basis)}`;
-  const role = `；角色 ${roleLabel(item.role)}`;
+  const basis = `；${labels.evidence(
+    evidenceBasisLabel(item.evidence_basis, language),
+  )}`;
+  const role = `；${labels.maturity(roleLabel(item.role, language))}`;
   const quote = item.evidence_quote
-    ? `；摘录（${item.evidence_basis === "title" ? "标题" : "摘要"}）：“${escapeMarkdown(
-        item.evidence_quote,
-      )}”`
+    ? `；${labels.excerpt(
+        item.evidence_basis === "title"
+          ? labels.titleClue
+          : labels.abstractEvidence,
+        escapeMarkdown(item.evidence_quote),
+      )}`
     : "";
-  return `- ${paperTitle(item.paper)} — ${paperMetadata(item.paper)}${basis}${role}${score}${reason}${quote}`;
+  return `- ${paperTitle(item.paper)} — ${paperMetadata(
+    item.paper,
+    language,
+  )}${basis}${role}${score}${reason}${quote}`;
 }
 
 function uniquePapers(field: FieldNode): Paper[] {
@@ -449,73 +486,102 @@ function sanitizedFields(field: FieldNode, fields?: FieldNode[]): FieldNode[] {
 export function buildResearchBrief(
   field: FieldNode,
   fields?: FieldNode[],
+  language: Language = "zh-CN",
 ): string {
+  const labels = exportLabels(language);
+  const labelColon = language === "en" ? ": " : "：";
+  const sentenceEnd = language === "en" ? "." : "。";
+  const localizedLimitations = limitations(language);
   const context = sanitizedFields(field, fields);
   const current = context[0];
   if (!current) {
-    return "# Field Navigator\n\n结果字段无效，未生成可引用内容。";
+    return `# ${labels.product}\n\n${labels.invalidResult}`;
   }
 
   const lines: string[] = [
     `# ${escapeMarkdown(current.name)}`,
     "",
-    `> 来源：${sourceLabel(current)}；候选范围：${rangeLabel(current)}。`,
-    `> 方法边界：${LIMITATIONS.join(" ")}`,
+    `> ${labels.source}${labelColon}${sourceLabel(current, language)}${
+      language === "en" ? "; " : "；"
+    }${
+      language === "en" ? "candidate range" : "候选范围"
+    }${labelColon}${rangeLabel(current, language)}${sentenceEnd}`,
+    `> ${language === "en" ? "Method limits" : "方法边界"}${labelColon}${localizedLimitations.join(" ")}`,
   ];
   if (current.research_question?.trim()) {
     lines.push(
-      `> 原始研究问题：${escapeMarkdown(current.research_question.trim())}`,
+      `> ${language === "en" ? "Original research question" : "原始研究问题"}${labelColon}${escapeMarkdown(current.research_question.trim())}`,
     );
   }
   if (current.phase !== "complete") {
     lines.push(
-      `> ⚠️ 当前结果只到 ${escapeMarkdown(
-        current.phase,
-      )} 阶段；以下只列出已返回的数据，不补写未生成的分支或论文判断。`,
+      `> ⚠️ ${labels.incompleteNotice.replace(
+        "{phase}",
+        escapeMarkdown(labels.phase(current.phase)),
+      )}`,
     );
   }
 
   lines.push(
     "",
-    "## 领域概要",
-    escapeMarkdown(current.summary) || "暂无概要。",
+    `## ${labels.domainSummary}`,
+    escapeMarkdown(current.summary) || labels.noSummary,
   );
-  lines.push("", "## 前置领域", ...relationLines(current.prerequisites));
-  lines.push("", "## 研究分支", ...relationLines(current.subfields));
+  lines.push(
+    "",
+    `## ${labels.prerequisites}`,
+    ...relationLines(current.prerequisites, language),
+  );
+  lines.push(
+    "",
+    `## ${labels.researchBranches}`,
+    ...relationLines(current.subfields, language),
+  );
 
   lines.push(
     "",
-    "## 支持论文引用",
-    "> 以下是支持关系可追溯的论文元数据，不代表工具读取或引用了全文/原文。",
+    `## ${labels.supportingCitations}`,
+    `> ${labels.citationDisclaimer}`,
   );
   const supportPapers = uniquePapers(current);
   if (supportPapers.length) {
     for (const paper of supportPapers)
-      lines.push(`- ${paperTitle(paper)} — ${paperMetadata(paper)}`);
+      lines.push(`- ${paperTitle(paper)} — ${paperMetadata(paper, language)}`);
   } else {
-    lines.push("- 未返回可追溯支持论文元数据。");
+    lines.push(`- ${labels.noTraceablePapers}`);
   }
 
   const reading = current.core_papers;
-  lines.push("", "## 阅读起点（当前排序前 3）");
-  if (reading.length) lines.push(...reading.slice(0, 3).map(paperLine));
-  else lines.push("- 未返回核心论文。");
+  lines.push("", `## ${labels.readingStart}`);
+  if (reading.length)
+    lines.push(...reading.slice(0, 3).map((item) => paperLine(item, language)));
+  else
+    lines.push(
+      `- ${language === "en" ? "No core papers were returned." : "未返回核心论文。"}`,
+    );
   if (reading.length > 3) {
-    lines.push("", "## 其他核心论文", ...reading.slice(3).map(paperLine));
+    lines.push(
+      "",
+      `## ${labels.otherCorePapers}`,
+      ...reading.slice(3).map((item) => paperLine(item, language)),
+    );
   }
 
   if (current.warnings.length) {
     lines.push(
       "",
-      "## 当前限制",
+      `## ${labels.currentLimitations}`,
       ...current.warnings.map((w) => `- ${escapeMarkdown(w)}`),
     );
   }
   if (context.length > 1) {
-    lines.push("", "## 已加载领域");
+    lines.push("", `## ${labels.loadedFields}`);
     for (const loaded of context.slice(1))
       lines.push(
-        `- **${escapeMarkdown(loaded.name)}** — ${sourceLabel(loaded)}；阶段 ${escapeMarkdown(loaded.phase)}。`,
+        `- **${escapeMarkdown(loaded.name)}** — ${sourceLabel(
+          loaded,
+          language,
+        )}；${labels.phase(escapeMarkdown(loaded.phase))}。`,
       );
   }
 
@@ -541,6 +607,7 @@ function exportedField(field: FieldNode) {
     evidence_papers: evidence,
     quality_revision: field.quality_revision ?? 0,
     research_question: field.research_question ?? null,
+    language: field.language ?? "zh-CN",
     provenance: {
       paper_source: field.paper_source,
       analysis_source: field.analysis_source,
@@ -549,7 +616,8 @@ function exportedField(field: FieldNode) {
       phase: field.phase,
       quality_revision: field.quality_revision ?? 0,
       research_question: field.research_question ?? null,
-      limitations: LIMITATIONS,
+      language: field.language ?? "zh-CN",
+      limitations: limitations(field.language ?? "zh-CN"),
     },
   };
 }
@@ -562,7 +630,9 @@ function exportedField(field: FieldNode) {
 export function serializeMap(
   fields: FieldNode[],
   currentFieldId?: string,
+  language: Language = "zh-CN",
 ): string {
+  const localizedLimitations = limitations(language);
   const safeFields: FieldNode[] = [];
   const seen = new Set<string>();
   for (const field of Array.isArray(fields) ? fields : []) {
@@ -584,6 +654,7 @@ export function serializeMap(
   const document = {
     version: MAP_EXPORT_VERSION,
     format: "field-navigator-map",
+    language,
     exported_at: new Date().toISOString(),
     current_field_id: current?.id ?? null,
     complete: safeFields.length > 0 && !incomplete,
@@ -592,8 +663,13 @@ export function serializeMap(
       paper_sources: sourceKinds,
       analysis_sources: analysisKinds,
       limitations: incomplete
-        ? [...LIMITATIONS, "未生成的分支与论文判断不会在导出中补写。"]
-        : LIMITATIONS,
+        ? [
+            ...localizedLimitations,
+            language === "en"
+              ? "Generated branches and paper judgments are not filled in when they were not returned."
+              : "未生成的分支与论文判断不会在导出中补写。",
+          ]
+        : localizedLimitations,
     },
     fields: safeFields.map(exportedField),
   };

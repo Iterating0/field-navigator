@@ -23,6 +23,7 @@ import {
   History,
   Info,
   Layers,
+  Languages,
   List,
   LoaderCircle,
   Moon,
@@ -34,6 +35,9 @@ import {
   X,
   Network,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { useLocale } from "./i18n";
+import { normalizeLanguage } from "./types";
 import { exploreField, resolveQuery } from "./api/client";
 import {
   ExplorationRequests,
@@ -56,6 +60,7 @@ import {
   saveLibrary,
   updateLibraryItem,
   removeLibraryItem,
+  restoreLibraryItem,
   exportLibraryMarkdown,
   getSavedPaperIds,
   isSavedPaper,
@@ -71,6 +76,7 @@ import { ResearchLibrary } from "./components/ResearchLibrary";
 import type {
   CorePaper,
   FieldNode,
+  Language,
   Mode,
   QueryCandidate,
   QueryResolution,
@@ -93,16 +99,19 @@ type PendingJob = {
   name: string;
   mode: Mode;
   researchQuestion?: string;
+  language: Language;
 };
 function nodesForMode(
   snapshots: Record<string, FieldNode>,
   mode: Mode,
   researchQuestion?: string | null,
+  language: Language = "zh-CN",
 ) {
   const question = normalizeResearchQuestion(researchQuestion);
   const result: Record<string, FieldNode> = {};
   for (const [key, node] of Object.entries(snapshots)) {
     if (!key.startsWith(`${mode}:`)) continue;
+    if (normalizeLanguage(node.language) !== language) continue;
     const nodeQuestion = normalizeResearchQuestion(node.research_question);
     // Contextual root fields are isolated. Context-free child explorations
     // remain visible from any root because children deliberately do not inherit
@@ -118,32 +127,37 @@ function shortQuestion(value?: string | null) {
   if (!text) return "";
   return text.length > 280 ? `${text.slice(0, 280)}…` : text;
 }
-function shortDate(value?: string) {
+function shortDate(value?: string, language = "zh-CN") {
   if (!value || !Number.isFinite(new Date(value).getTime())) return "";
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(new Date(value));
+  return new Intl.DateTimeFormat(
+    language.startsWith("en") ? "en-US" : "zh-CN",
+    {
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    },
+  ).format(new Date(value));
 }
-function sourceLabel(field: FieldNode) {
-  if (field.paper_source === "demo") return "离线示例 · 真实书目 / 预设关系";
-  if (field.phase !== "complete") return "真实论文 · 分析未完成";
-  if (field.analysis_source === "mock") return "真实论文 · 未使用模型分析";
-  return "OpenAlex 论文 · AI 分析";
+function sourceLabel(field: FieldNode, translate: (key: string) => string) {
+  if (field.paper_source === "demo") return translate("source.demo");
+  if (field.phase !== "complete") return translate("source.incomplete");
+  if (field.analysis_source === "mock") return translate("source.mock");
+  return translate("source.openalex");
 }
-function friendlyError(error: unknown) {
-  if (!(error instanceof Error)) return "暂时无法完成探索，请重试。";
-  if (error.name === "TimeoutError")
-    return "这次分析等待较久，已停止等待。已完成的检索阶段可以在重试时复用。";
-  if (error.message === "Failed to fetch")
-    return "暂时无法连接研究服务。可以先体验离线示例，或稍后重试。";
+function friendlyError(error: unknown, translate: (key: string) => string) {
+  if (!(error instanceof Error)) return translate("errors.generic");
+  if (error.name === "TimeoutError") return translate("errors.timeout");
+  if (error.message === "Failed to fetch") return translate("errors.network");
   return error.message;
 }
 
 export default function App() {
+  const { t, i18n } = useTranslation("app");
+  const { language, setLanguage } = useLocale();
+  const languageRef = useRef(language);
+  languageRef.current = language;
   const [initial] = useState(loadSession);
   const restored =
     initial.snapshots[
@@ -151,6 +165,7 @@ export default function App() {
         initial.current,
         initial.mode,
         initial.current_research_question,
+        initial.current_language,
       )
     ] ?? null;
   const [theme, setTheme] = useState<"light" | "dark">(() =>
@@ -191,6 +206,7 @@ export default function App() {
       initial.snapshots,
       initial.mode,
       initial.current_research_question,
+      initial.current_language,
     ),
   );
   const [requests] = useState(() => new ExplorationRequests(exploreField));
@@ -198,6 +214,7 @@ export default function App() {
   const historyGeneration = useRef(0);
   const failedOperation = useRef<"resolve" | "explore">("resolve");
   const failedMode = useRef<Mode>(initial.mode);
+  const failedLanguage = useRef<Language>(language);
   const failedRefresh = useRef(false);
   const failedResearchQuestion = useRef<string | undefined>(
     initial.current_research_question,
@@ -208,7 +225,7 @@ export default function App() {
   >({});
   const [busy, setBusy] = useState(false);
   const [loadingName, setLoadingName] = useState("");
-  const [loadingStage, setLoadingStage] = useState("准备研究工作空间…");
+  const [loadingStage, setLoadingStage] = useState("loading.workspace");
   const [startedAt, setStartedAt] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState("");
@@ -222,6 +239,7 @@ export default function App() {
     null,
   );
   const [showHelp, setShowHelp] = useState(false);
+  const [confirmHistoryClear, setConfirmHistoryClear] = useState(false);
   const dialogReturnFocus = useRef<HTMLElement | null>(null);
   const [showPrerequisites, setShowPrerequisites] = useState(true);
   const [showSubfields, setShowSubfields] = useState(true);
@@ -234,12 +252,17 @@ export default function App() {
   const [mapPresentation, setMapPresentation] = useState<"graph" | "list">(
     () => (window.innerWidth < 1100 ? "list" : "graph"),
   );
+  const presentationChosen = useRef(false);
   const [health, setHealth] = useState<{
     llm_ready?: boolean;
     llm_configured?: boolean;
     openalex_key_configured?: boolean;
   } | null>(null);
   const [library, setLibrary] = useState<SavedPaper[]>(loadLibrary);
+  const [removedPaper, setRemovedPaper] = useState<{
+    item: SavedPaper;
+    index: number;
+  } | null>(null);
   const [libraryWarning, setLibraryWarning] = useState("");
   const lastLibrary = useRef<SavedPaper[] | null>(null);
   const [exportDocument, setExportDocument] = useState<ExportDocument | null>(
@@ -277,13 +300,35 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     document
       .querySelector('meta[name="theme-color"]')
-      ?.setAttribute("content", theme === "dark" ? "#111923" : "#f7f8fa");
+      ?.setAttribute("content", theme === "dark" ? "#121b23" : "#f6f7f9");
     try {
       localStorage.setItem("field-navigator-theme", theme);
     } catch {
       /* Appearance remains usable without persistence. */
     }
   }, [theme]);
+  useEffect(() => {
+    document.documentElement.lang = language;
+    document.title = `Field Navigator · ${t("brand.tagline")}`;
+    document
+      .querySelector('meta[name="description"]')
+      ?.setAttribute("content", t("brand.description"));
+  }, [language, t]);
+  useEffect(() => {
+    const compact = window.matchMedia("(max-width: 1099px)");
+    const update = () => {
+      if (!presentationChosen.current)
+        setMapPresentation(compact.matches ? "list" : "graph");
+    };
+    update();
+    compact.addEventListener("change", update);
+    return () => compact.removeEventListener("change", update);
+  }, []);
+  useEffect(() => {
+    // A newly selected page or research topic starts at its heading. Refreshing
+    // another phase of the same topic does not interrupt the reading position.
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  }, [view, field?.name, field?.research_question]);
   useEffect(() => {
     // Restoring research never starts an external paper/model request.
     const controller = new AbortController();
@@ -302,24 +347,17 @@ export default function App() {
       current_research_question: complete
         ? normalizeResearchQuestion(field.research_question) || undefined
         : undefined,
+      current_language: normalizeLanguage(field?.language),
       mode,
       snapshots,
       trail,
       trail_contexts: trailContexts,
     });
-    setStorageWarning(
-      ok
-        ? ""
-        : "浏览器未能保存研究记录；当前页面仍可使用，请导出简报保留结果。",
-    );
-  }, [history, field, mode, snapshots, trail, trailContexts]);
+    setStorageWarning(ok ? "" : t("errors.sessionStorage"));
+  }, [history, field, mode, snapshots, trail, trailContexts, t]);
   useEffect(() => {
-    setLibraryWarning(
-      saveLibrary(library)
-        ? ""
-        : "阅读清单暂未写入浏览器存储。请导出清单保留笔记，避免关闭页面后丢失。",
-    );
-  }, [library]);
+    setLibraryWarning(saveLibrary(library) ? "" : t("errors.libraryStorage"));
+  }, [library, t]);
   useEffect(() => {
     if (!busy && !resolving) return;
     const update = () =>
@@ -334,13 +372,23 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [toast]);
   useEffect(() => {
-    if (!showHelp && !exportDocument) return;
+    if (!showHelp && !exportDocument && !confirmHistoryClear) return;
     const previousOverflow = document.body.style.overflow;
+    const background = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        ".app-header, .workspace, .skip-link",
+      ),
+      (element) => ({ element, inert: element.inert }),
+    );
+    background.forEach(({ element }) => {
+      element.inert = true;
+    });
     document.body.style.overflow = "hidden";
     const handler = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setShowHelp(false);
         setExportDocument(null);
+        setConfirmHistoryClear(false);
         return;
       }
       if (event.key !== "Tab") return;
@@ -368,10 +416,13 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", handler);
       document.body.style.overflow = previousOverflow;
+      background.forEach(({ element, inert }) => {
+        element.inert = inert;
+      });
       if (dialogReturnFocus.current?.isConnected)
         dialogReturnFocus.current.focus();
     };
-  }, [showHelp, exportDocument]);
+  }, [showHelp, exportDocument, confirmHistoryClear]);
 
   function updateTrail(
     resultName: string,
@@ -400,10 +451,12 @@ export default function App() {
         refresh?: boolean;
         resetPath?: boolean;
         mode?: Mode;
+        language?: Language;
         researchQuestion?: string | null;
       } = {},
     ) => {
       const selectedMode = options.mode ?? modeRef.current;
+      const selectedLanguage = options.language ?? languageRef.current;
       const ticket = requests.select();
       const generation = historyGeneration.current;
       failedOperation.current = "explore";
@@ -415,6 +468,7 @@ export default function App() {
       const sameCurrentField =
         currentRef.current &&
         keyOf(currentRef.current.name) === keyOf(name) &&
+        normalizeLanguage(currentRef.current.language) === selectedLanguage &&
         completedMode.current === selectedMode;
       const researchQuestion = hasExplicitQuestion
         ? explicitQuestion
@@ -422,14 +476,25 @@ export default function App() {
           ? normalizeResearchQuestion(currentRef.current?.research_question) ||
             undefined
           : undefined;
-      const key = requestKey(name, selectedMode, researchQuestion);
+      const key = requestKey(
+        name,
+        selectedMode,
+        researchQuestion,
+        selectedLanguage,
+      );
       activeRequest.current = key;
       modeRef.current = selectedMode;
       setMode(selectedMode);
       setExplored(
-        nodesForMode(snapshotsRef.current, selectedMode, researchQuestion),
+        nodesForMode(
+          snapshotsRef.current,
+          selectedMode,
+          researchQuestion,
+          selectedLanguage,
+        ),
       );
       failedMode.current = selectedMode;
+      failedLanguage.current = selectedLanguage;
       failedRefresh.current = !!options.refresh;
       failedResearchQuestion.current = researchQuestion;
       setResolution(null);
@@ -446,6 +511,7 @@ export default function App() {
             previous.name,
             previousMode,
             previous.research_question,
+            normalizeLanguage(previous.language),
           ) !== key);
       const parent = options.resetPath
         ? null
@@ -474,10 +540,15 @@ export default function App() {
       setBusy(true);
       setStartedAt(Date.now());
       setLoadingName(name);
-      setLoadingStage("检查已保存的分析阶段…");
+      setLoadingStage("loading.savedStages");
       setPending((old) => ({
         ...old,
-        [key]: { name, mode: selectedMode, researchQuestion },
+        [key]: {
+          name,
+          mode: selectedMode,
+          researchQuestion,
+          language: selectedLanguage,
+        },
       }));
       setBackgroundErrors((old) => {
         const next = { ...old };
@@ -493,27 +564,29 @@ export default function App() {
             if (!requests.isCurrent(ticket)) return;
             if (event.type === "status")
               setLoadingStage(
-                event.stage === "search"
-                  ? "检索真实论文与摘要…"
-                  : "检查缓存，或等待已有分析…",
+                event.stage === "search" ? "loading.search" : "loading.cached",
               );
             if (event.type === "partial") {
               displayed.current = event.field;
               setField(event.field);
               setLoadingStage(
-                event.stage === "papers"
-                  ? "论文已找到，正在梳理研究方向…"
-                  : "地图已完成，正在整理阅读建议…",
+                event.stage === "papers" ? "loading.papers" : "loading.map",
               );
             }
           },
           researchQuestion,
+          selectedLanguage,
         );
         if (generation !== historyGeneration.current) return;
         if (result.phase === "complete") {
           setSnapshots((old) => ({
             ...old,
-            [requestKey(result.name, selectedMode, researchQuestion)]: result,
+            [requestKey(
+              result.name,
+              selectedMode,
+              researchQuestion,
+              selectedLanguage,
+            )]: result,
           }));
           setHistory((old) =>
             [
@@ -523,12 +596,20 @@ export default function App() {
                     entry.name,
                     entry.mode,
                     entry.research_question,
-                  ) !== requestKey(result.name, selectedMode, researchQuestion),
+                    entry.language,
+                  ) !==
+                  requestKey(
+                    result.name,
+                    selectedMode,
+                    researchQuestion,
+                    selectedLanguage,
+                  ),
               ),
               {
                 name: result.name,
                 parent,
                 mode: selectedMode,
+                language: selectedLanguage,
                 ...(normalizeResearchQuestion(result.research_question)
                   ? {
                       research_question: normalizeResearchQuestion(
@@ -568,7 +649,8 @@ export default function App() {
                 name,
                 mode: selectedMode,
                 researchQuestion,
-                error: friendlyError(cause),
+                language: selectedLanguage,
+                error: friendlyError(cause, t),
               },
             }));
           return;
@@ -590,11 +672,12 @@ export default function App() {
               snapshotsRef.current,
               previousMode,
               previous.research_question,
+              normalizeLanguage(previous.language),
             ),
           );
         }
         if (!(cause instanceof Error && cause.name === "AbortError"))
-          setError(friendlyError(cause));
+          setError(friendlyError(cause, t));
       } finally {
         if (!requests.hasPending(key))
           setPending((old) => {
@@ -605,7 +688,7 @@ export default function App() {
         if (requests.isCurrent(ticket)) setBusy(false);
       }
     },
-    [requests],
+    [requests, t],
   );
 
   function dismissResolution() {
@@ -621,6 +704,32 @@ export default function App() {
     setView("home");
     setError("");
   }
+  function startNewResearch() {
+    goHome();
+    setQuery("");
+    modeRef.current = "auto";
+    setMode("auto");
+    setTimeout(() => document.getElementById("research-query")?.focus(), 0);
+  }
+  useEffect(() => {
+    if (view !== "library") return;
+    const handleNewResearch = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key !== "k") return;
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        (event.target instanceof HTMLElement &&
+          event.target.closest('input, textarea, [contenteditable="true"]')) ||
+        document.querySelector('[aria-modal="true"]') ||
+        document.querySelector<HTMLElement>(".app-header")?.inert
+      )
+        return;
+      event.preventDefault();
+      startNewResearch();
+    };
+    window.addEventListener("keydown", handleNewResearch);
+    return () => window.removeEventListener("keydown", handleNewResearch);
+  }, [view]);
   function changeMode(next: Mode) {
     goHome();
     modeRef.current = next;
@@ -631,7 +740,7 @@ export default function App() {
     const input = query.trim();
     failedOperation.current = "resolve";
     if (input.length < 2) {
-      setError("请写下至少两个字的领域或研究问题。");
+      setError(t("errors.shortQuery"));
       return;
     }
     resolutionController.current?.abort();
@@ -646,7 +755,12 @@ export default function App() {
     setError("");
     setStartedAt(Date.now());
     try {
-      const result = await resolveQuery(input, selectedMode, controller.signal);
+      const result = await resolveQuery(
+        input,
+        selectedMode,
+        controller.signal,
+        languageRef.current,
+      );
       if (ticket !== resolutionTicket.current || controller.signal.aborted)
         return;
       setResolving(false);
@@ -663,7 +777,7 @@ export default function App() {
         ticket === resolutionTicket.current &&
         !(cause instanceof Error && cause.name === "AbortError")
       )
-        setError(friendlyError(cause));
+        setError(friendlyError(cause, t));
     } finally {
       if (ticket === resolutionTicket.current) setResolving(false);
     }
@@ -710,6 +824,7 @@ export default function App() {
         snapshotsRef.current,
         completedMode.current,
         current.research_question,
+        normalizeLanguage(current.language),
       ),
     );
     setQuery(current.name);
@@ -718,17 +833,11 @@ export default function App() {
   function addPaper(core: CorePaper, fieldName: string) {
     const existing = isSavedPaper(core.paper, getSavedPaperIds(library));
     if (!existing && library.length >= MAX_LIBRARY_ITEMS) {
-      setToast(
-        `清单已达到 ${MAX_LIBRARY_ITEMS} 篇。请先导出或移除不需要的论文。`,
-      );
+      setToast(t("toast.libraryFull", { count: MAX_LIBRARY_ITEMS }));
       return;
     }
     setLibrary((old) => addToLibrary(old, core, fieldName));
-    setToast(
-      existing
-        ? "已为这篇论文补充当前领域来源。"
-        : "已加入当前阅读清单，可以继续阅读和记笔记。",
-    );
+    setToast(existing ? t("toast.paperSourceAdded") : t("toast.paperAdded"));
   }
   function saveReadingStart() {
     if (!field) return;
@@ -744,10 +853,10 @@ export default function App() {
     setLibrary(next);
     setToast(
       skipped
-        ? `新增 ${added} 篇；清单已满，${skipped} 篇未加入。旧收藏和笔记均保留。`
+        ? t("toast.readingStartSkipped", { added, skipped })
         : added
-          ? `已新增 ${added} 篇阅读起点；重复论文会合并领域来源。`
-          : "这些阅读起点已在清单，已合并当前领域来源。",
+          ? t("toast.readingStartAdded", { count: added })
+          : t("toast.readingStartExisting"),
     );
   }
   function clearHistory() {
@@ -769,9 +878,32 @@ export default function App() {
     setBusy(false);
     setView("home");
     setQuery("");
-    if (!clearSession())
-      setStorageWarning("浏览器未能清除旧记录，请检查浏览器的存储设置。");
-    setToast("已清除本机探索记录；阅读清单保留。");
+    if (!clearSession()) setStorageWarning(t("errors.clearStorage"));
+    setToast(t("toast.historyCleared"));
+  }
+  function removePaper(id: string) {
+    const index = library.findIndex((item) => item.id === id);
+    if (index < 0) return;
+    setRemovedPaper({ item: library[index], index });
+    setLibrary((old) => removeLibraryItem(old, id));
+    setToast(t("toast.paperRemoved"));
+  }
+  function undoRemovePaper() {
+    if (!removedPaper) return;
+    if (isSavedPaper(removedPaper.item.paper, savedPaperIds)) {
+      setRemovedPaper(null);
+      setToast(t("toast.paperRestoredAlready"));
+      return;
+    }
+    if (library.length >= MAX_LIBRARY_ITEMS) {
+      setToast(t("toast.libraryFullUndo"));
+      return;
+    }
+    setLibrary((old) =>
+      restoreLibraryItem(old, removedPaper.item, removedPaper.index),
+    );
+    setRemovedPaper(null);
+    setToast(t("toast.paperRestored"));
   }
   function openExport(document: ExportDocument) {
     dialogReturnFocus.current = window.document
@@ -782,8 +914,8 @@ export default function App() {
   function exportBrief() {
     if (field)
       openExport({
-        title: "研究入门简报",
-        content: buildResearchBrief(field, Object.values(explored)),
+        title: t("dialogs.briefTitle"),
+        content: buildResearchBrief(field, Object.values(explored), language),
         filename: "field-navigator-research-brief.md",
         format: "markdown",
       });
@@ -796,20 +928,23 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#research-workspace">
+        {t("brand.skipToResearch")}
+      </a>
       <header className="app-header">
         <button
           className="brand"
           onClick={goHome}
-          aria-label="Field Navigator 首页"
+          aria-label={t("brand.homeAria")}
         >
           <span className="brand-symbol">
             <Compass size={24} strokeWidth={1.7} />
           </span>
           <span>
-            Field Navigator<small>让研究有方向</small>
+            Field Navigator<small>{t("brand.tagline")}</small>
           </span>
         </button>
-        {view !== "home" && (
+        {view === "map" && (
           <SearchBar
             query={query}
             setQuery={setQuery}
@@ -819,13 +954,47 @@ export default function App() {
             onSearch={() => void submitQuery()}
           />
         )}
+        {view === "library" && (
+          <span
+            className="header-research-shortcut"
+            title={t("header.newResearchShortcut")}
+          >
+            <kbd>Ctrl K</kbd> {t("header.newResearchShortcutLabel")}
+          </span>
+        )}
         <div className="header-actions">
+          <label className="language-switcher">
+            <Languages size={16} aria-hidden="true" />
+            <span className="sr-only">{t("language.label")}</span>
+            <select
+              aria-label={t("language.label")}
+              value={language}
+              onChange={(event) => {
+                const next = event.target.value as Language;
+                dismissResolution();
+                setChosenDirection(null);
+                if (!setLanguage(next))
+                  setToast(
+                    i18n.getFixedT(next, "app")("language.preferenceNotSaved"),
+                  );
+              }}
+            >
+              <option value="zh-CN" lang="zh-CN">
+                简体中文
+              </option>
+              <option value="en" lang="en">
+                English
+              </option>
+            </select>
+          </label>
           <span className="private-badge">
-            <ShieldCheck size={14} /> 浏览器本地工作空间
+            <ShieldCheck size={14} /> {t("header.privateWorkspace")}
           </span>
           <button
             className="theme-toggle icon-button"
-            aria-label={theme === "light" ? "切换到暗色模式" : "切换到亮色模式"}
+            aria-label={t(
+              theme === "light" ? "header.toggleDark" : "header.toggleLight",
+            )}
             onClick={() =>
               setTheme((old) => (old === "light" ? "dark" : "light"))
             }
@@ -834,7 +1003,7 @@ export default function App() {
           </button>
           <button
             className="help-button"
-            aria-label="使用指南"
+            aria-label={t("header.helpAria")}
             onClick={() => {
               dialogReturnFocus.current =
                 document.activeElement as HTMLElement | null;
@@ -842,7 +1011,7 @@ export default function App() {
             }}
           >
             <Info size={17} />
-            <span>使用指南</span>
+            <span>{t("header.help")}</span>
           </button>
         </div>
       </header>
@@ -851,42 +1020,32 @@ export default function App() {
           <div className="workspace-label">
             <Layers size={16} />
             <span>
-              研究工作空间<small>YOUR RESEARCH DESK</small>
+              {t("sidebar.workspace")}
+              <small>{t("sidebar.workspaceSubtitle")}</small>
             </span>
           </div>
           <button
             className={`new-exploration ${view === "home" ? "selected" : ""}`}
-            onClick={() => {
-              goHome();
-              setQuery("");
-              modeRef.current = "auto";
-              setMode("auto");
-              setTimeout(
-                () =>
-                  document
-                    .querySelector<HTMLInputElement>(
-                      '[aria-label="搜索科研领域"]',
-                    )
-                    ?.focus(),
-                0,
-              );
-            }}
+            aria-current={view === "home" ? "page" : undefined}
+            onClick={startNewResearch}
           >
-            <Plus size={17} /> 新的研究问题
+            <Plus size={17} /> {t("sidebar.newQuestion")}
           </button>
           <button
             className={`library-nav ${view === "library" ? "selected" : ""}`}
+            aria-current={view === "library" ? "page" : undefined}
             onClick={openLibrary}
           >
-            <Bookmark size={17} /> 阅读清单 <b>{library.length}</b>
+            <Bookmark size={17} /> {t("sidebar.readingList")}{" "}
+            <b>{library.length}</b>
           </button>
           <div className="sidebar-section-label">
             <span>
-              <History size={13} /> 最近探索
+              <History size={13} /> {t("sidebar.recent")}
             </span>
             <b>{history.length}</b>
           </div>
-          <nav className="history-list" aria-label="探索记录">
+          <nav className="history-list" aria-label={t("sidebar.historyAria")}>
             {history.length ? (
               [...history].reverse().map((entry) => (
                 <button
@@ -894,15 +1053,17 @@ export default function App() {
                     entry.name,
                     entry.mode,
                     entry.research_question,
+                    entry.language,
                   )}
                   title={entry.research_question || entry.name}
-                  className={`history-item ${view === "map" && field && requestKey(field.name, completedMode.current, field.research_question) === requestKey(entry.name, entry.mode, entry.research_question) ? "selected" : ""}`}
+                  className={`history-item ${view === "map" && field && requestKey(field.name, completedMode.current, field.research_question, normalizeLanguage(field.language)) === requestKey(entry.name, entry.mode, entry.research_question, entry.language) ? "selected" : ""}`}
                   onClick={() => {
                     dismissResolution();
                     setChosenDirection(null);
                     void explore(entry.name, {
                       resetPath: true,
                       mode: entry.mode,
+                      language: normalizeLanguage(entry.language),
                       researchQuestion: entry.research_question ?? null,
                     });
                   }}
@@ -918,11 +1079,17 @@ export default function App() {
                     {entry.name}
                     <small>
                       {entry.paper_source === "demo" || entry.mode === "demo"
-                        ? "离线示例"
-                        : "论文检索"}
+                        ? t("sidebar.offline")
+                        : t("sidebar.paperSearch")}
+                      {" · "}
+                      {t(
+                        normalizeLanguage(entry.language) === "en"
+                          ? "language.codeEnglish"
+                          : "language.codeChinese",
+                      )}
                       {entry.created_at
-                        ? ` · ${shortDate(entry.created_at)}`
-                        : " · 点击恢复"}
+                        ? ` · ${shortDate(entry.created_at, i18n.language)}`
+                        : ` · ${t("sidebar.resume")}`}
                     </small>
                   </span>
                 </button>
@@ -930,18 +1097,17 @@ export default function App() {
             ) : (
               <div className="sidebar-empty">
                 <Compass size={23} />
-                <p>
-                  每一次探索，
-                  <br />
-                  都会在这里留下起点。
-                </p>
+                <p>{t("sidebar.emptyHistory")}</p>
               </div>
             )}
           </nav>
           {(countPending > 0 || Object.keys(backgroundErrors).length > 0) && (
-            <nav className="pending-list" aria-label="后台分析">
+            <nav
+              className="pending-list"
+              aria-label={t("sidebar.backgroundAnalysis")}
+            >
               <div className="sidebar-section-label">
-                后台分析 <b>{countPending}</b>
+                {t("sidebar.backgroundAnalysis")} <b>{countPending}</b>
               </div>
               {Object.entries(pending).map(([key, job]) => (
                 <div className="pending-job" key={key}>
@@ -949,6 +1115,7 @@ export default function App() {
                     onClick={() =>
                       void explore(job.name, {
                         mode: job.mode,
+                        language: job.language,
                         researchQuestion: job.researchQuestion ?? null,
                       })
                     }
@@ -956,12 +1123,12 @@ export default function App() {
                     <LoaderCircle size={14} className="spin" />
                     <span>
                       {job.name}
-                      <small>点击查看进度</small>
+                      <small>{t("sidebar.viewProgress")}</small>
                     </span>
                   </button>
                   <button
                     className="icon-button"
-                    aria-label={`取消分析 ${job.name}`}
+                    aria-label={t("sidebar.cancelAnalysis", { name: job.name })}
                     onClick={() => requests.cancel(key)}
                   >
                     <X size={13} />
@@ -976,6 +1143,7 @@ export default function App() {
                   onClick={() =>
                     void explore(job.name, {
                       mode: job.mode,
+                      language: job.language,
                       researchQuestion: job.researchQuestion ?? null,
                     })
                   }
@@ -983,27 +1151,26 @@ export default function App() {
                   <Info size={14} />
                   <span>
                     {job.name}
-                    <small>失败 · 点击重试</small>
+                    <small>{t("sidebar.failedRetry")}</small>
                   </span>
                 </button>
               ))}
             </nav>
           )}
           <div className="sidebar-bottom">
-            <div className="sidebar-tip">
-              <BookOpen size={18} />
-              <strong>收藏，是研究的下一步。</strong>
-              <p>把有用的论文留下，再用笔记连接它们。</p>
-            </div>
             <div className="local-status">
               <Database size={12} />
-              <span>记录仅存于此浏览器</span>
+              <span>{t("sidebar.localRecords")}</span>
               {history.length > 0 && (
                 <button
                   className="icon-button"
-                  aria-label="清除探索记录"
-                  title="清除探索记录，保留阅读清单"
-                  onClick={clearHistory}
+                  aria-label={t("sidebar.clearHistoryAria")}
+                  title={t("sidebar.clearHistoryTitle")}
+                  onClick={() => {
+                    dialogReturnFocus.current =
+                      document.activeElement as HTMLElement | null;
+                    setConfirmHistoryClear(true);
+                  }}
                 >
                   <Trash2 size={12} />
                 </button>
@@ -1011,7 +1178,11 @@ export default function App() {
             </div>
           </div>
         </aside>
-        <main className={`main-workspace view-${view}`}>
+        <main
+          id="research-workspace"
+          tabIndex={-1}
+          className={`main-workspace view-${view}`}
+        >
           {(storageWarning || libraryWarning) && (
             <div className="storage-warning" role="alert">
               <Info size={16} />
@@ -1030,12 +1201,13 @@ export default function App() {
                     void explore(loadingName, {
                       refresh: failedRefresh.current,
                       mode: failedMode.current,
+                      language: failedLanguage.current,
                       researchQuestion: failedResearchQuestion.current ?? null,
                     });
                   else void submitQuery();
                 }}
               >
-                重试
+                {t("status.retry")}
               </button>
               <button
                 onClick={() => {
@@ -1043,11 +1215,11 @@ export default function App() {
                   void explore(ROOT, { mode: "demo", resetPath: true });
                 }}
               >
-                体验离线示例
+                {t("status.tryDemo")}
               </button>
               <button
                 className="icon-button"
-                aria-label="关闭错误提示"
+                aria-label={t("status.closeError")}
                 onClick={() => setError("")}
               >
                 <X size={15} />
@@ -1080,6 +1252,7 @@ export default function App() {
                   ? () =>
                       void explore(previousEntry.name, {
                         mode: previousEntry.mode,
+                        language: normalizeLanguage(previousEntry.language),
                         resetPath: true,
                         researchQuestion:
                           previousEntry.research_question ?? null,
@@ -1096,8 +1269,12 @@ export default function App() {
               onUpdate={(id, patch) =>
                 setLibrary((old) => updateLibraryItem(old, id, patch))
               }
-              onRemove={(id) => setLibrary((old) => removeLibraryItem(old, id))}
+              onRemove={removePaper}
+              onExplore={goHome}
+              onUndoRemove={undoRemovePaper}
+              canUndoRemove={!!removedPaper}
               onClear={() => {
+                setRemovedPaper(null);
                 setLibrary((old) => {
                   lastLibrary.current = old;
                   return [];
@@ -1109,8 +1286,8 @@ export default function App() {
               }}
               onExport={() =>
                 openExport({
-                  title: "阅读清单与笔记",
-                  content: exportLibraryMarkdown(library),
+                  title: t("dialogs.readingListTitle"),
+                  content: exportLibraryMarkdown(library, language),
                   filename: "field-navigator-reading-list.md",
                   format: "markdown",
                 })
@@ -1121,10 +1298,10 @@ export default function App() {
           {view === "map" && (
             <>
               <div className="breadcrumb-bar">
-                <nav className="breadcrumbs" aria-label="探索路径">
+                <nav className="breadcrumbs" aria-label={t("navigation.path")}>
                   <button
                     className="icon-button"
-                    aria-label="返回上一个领域"
+                    aria-label={t("navigation.back")}
                     disabled={trail.length < 2}
                     onClick={() =>
                       exploreNode(trail[trail.length - 2], trail.length - 2)
@@ -1132,7 +1309,7 @@ export default function App() {
                   >
                     <ArrowLeft size={16} />
                   </button>
-                  <button onClick={goHome}>研究起点</button>
+                  <button onClick={goHome}>{t("navigation.root")}</button>
                   {trail.slice(-2).map((name, offset) => {
                     const trailIndex =
                       trail.length - trail.slice(-2).length + offset;
@@ -1155,19 +1332,20 @@ export default function App() {
                     disabled={!field}
                     onClick={exportBrief}
                   >
-                    <FileText size={14} /> 导出研究简报
+                    <FileText size={14} /> {t("navigation.exportBrief")}
                   </button>
                   <button
                     className="icon-button"
-                    title="导出结构化地图 JSON"
-                    aria-label="导出地图 JSON"
+                    title={t("navigation.exportMapTitle")}
+                    aria-label={t("navigation.exportMapAria")}
                     disabled={!field || field.phase !== "complete"}
                     onClick={() =>
                       openExport({
-                        title: "结构化研究地图",
+                        title: t("navigation.exportMapTitle"),
                         content: serializeMap(
                           Object.values(explored),
                           field?.id,
+                          language,
                         ),
                         filename: "field-navigator-map.json",
                         format: "json",
@@ -1183,19 +1361,19 @@ export default function App() {
                   <section className="field-heading">
                     <div className="heading-eyebrow">
                       <span>
-                        <Compass size={14} /> 研究地图
+                        <Compass size={14} /> {t("field.map")}
                       </span>
                       <span
                         className={`source-badge ${field.paper_source === "demo" ? "demo" : ""}`}
                       >
-                        {sourceLabel(field)}
+                        {sourceLabel(field, t)}
                       </span>
                     </div>
                     <h1>{field.name}</h1>
                     {chosenDirection &&
                       chosenDirection.query === field.name && (
                         <p className="chosen-scope">
-                          <Compass size={13} /> 已选范围：
+                          <Compass size={13} /> {t("field.selectedScope")}
                           {chosenDirection.summary}
                         </p>
                       )}
@@ -1204,23 +1382,36 @@ export default function App() {
                         className="research-question"
                         title={field.research_question}
                       >
-                        <span>原始问题</span>
+                        <span>{t("field.originalQuestion")}</span>
                         {shortQuestion(field.research_question)}
                       </p>
                     )}
-                    <p className="field-summary">{field.summary}</p>
+                    <p
+                      className="field-summary"
+                      lang={normalizeLanguage(field.language)}
+                    >
+                      {field.summary}
+                    </p>
                     <div className="field-stats">
                       <span>
-                        <BookOpen size={14} /> {field.core_papers.length} 篇
-                        {field.phase === "complete" ? "阅读入口" : "初筛论文"}
+                        <BookOpen size={14} />
+                        {field.phase === "complete"
+                          ? t("field.readingEntry", {
+                              count: field.core_papers.length,
+                            })
+                          : t("field.initialPapers", {
+                              count: field.core_papers.length,
+                            })}
                       </span>
                       <span>
-                        <GitBranch size={14} /> {field.subfields.length}{" "}
-                        个研究分支
+                        <GitBranch size={14} />
+                        {t("field.branches", { count: field.subfields.length })}
                       </span>
                       <span>
-                        <Layers size={14} /> {field.prerequisites.length}{" "}
-                        个前置领域
+                        <Layers size={14} />
+                        {t("field.prerequisites", {
+                          count: field.prerequisites.length,
+                        })}
                       </span>
                       <span className="cache-status">
                         {field.phase === "complete" ? (
@@ -1232,10 +1423,12 @@ export default function App() {
                           />
                         )}
                         {field.phase === "complete"
-                          ? `保存于 ${shortDate(field.created_at)}`
+                          ? t("field.savedAt", {
+                              date: shortDate(field.created_at, i18n.language),
+                            })
                           : busy
-                            ? "分析仍在继续"
-                            : "仅完成部分分析"}
+                            ? t("field.analyzing")
+                            : t("field.partial")}
                       </span>
                       <button
                         className="refresh-button"
@@ -1245,21 +1438,59 @@ export default function App() {
                               field.name,
                               mode,
                               field.research_question,
+                              normalizeLanguage(field.language),
                             )
                           ]
                         }
                         onClick={() =>
                           void explore(field.name, {
                             refresh: field.phase === "complete",
+                            language: normalizeLanguage(field.language),
                             researchQuestion: field.research_question ?? null,
                           })
                         }
                       >
                         <RotateCw size={13} />
-                        {field.phase === "complete" ? "更新分析" : "重试分析"}
+                        {field.phase === "complete"
+                          ? t("field.update")
+                          : t("field.retry")}
                       </button>
                     </div>
                   </section>
+                  {normalizeLanguage(field.language) !== language && (
+                    <div className="language-notice" role="note">
+                      <Languages size={16} aria-hidden="true" />
+                      <span>
+                        {t("language.savedContent", {
+                          language: t(
+                            normalizeLanguage(field.language) === "en"
+                              ? "language.english"
+                              : "language.chinese",
+                          ),
+                        })}
+                      </span>
+                      <button
+                        className="secondary-button"
+                        disabled={busy}
+                        onClick={() =>
+                          void explore(field.name, {
+                            language,
+                            mode: completedMode.current,
+                            resetPath: true,
+                            researchQuestion: field.research_question ?? null,
+                          })
+                        }
+                      >
+                        {t("language.analyzeIn", {
+                          language: t(
+                            language === "en"
+                              ? "language.english"
+                              : "language.chinese",
+                          ),
+                        })}
+                      </button>
+                    </div>
+                  )}
                   {relevantWarnings.length > 0 && (
                     <details
                       className="analysis-notice"
@@ -1269,10 +1500,10 @@ export default function App() {
                         <Info size={14} />
                         <span>
                           {field.phase !== "complete" && !busy
-                            ? "分析暂未完成，已有论文仍可使用"
+                            ? t("field.pendingNotice")
                             : field.paper_source === "demo"
-                              ? "示例关系是预设的，论文出处可核对"
-                              : "查看本次分析的范围与限制"}
+                              ? t("field.demoNotice")
+                              : t("field.limitations")}
                         </span>
                         <ChevronRight size={14} />
                       </summary>
@@ -1284,56 +1515,87 @@ export default function App() {
                     </details>
                   )}
                   {firstPaper && (
-                    <section className="reading-next">
+                    <section
+                      className="reading-next"
+                      aria-label={t("field.readingStartAria")}
+                    >
                       <span className="reading-next-icon">
-                        <Bookmark size={20} />
+                        <Bookmark size={18} />
                       </span>
                       <div>
-                        <span className="eyebrow">把探索变成下一步</span>
                         <h2>
                           {field.phase === "complete"
-                            ? "先保存一个阅读起点"
-                            : "先留下已经找到的论文"}
+                            ? t("field.readingStart")
+                            : t("field.readingStartPartial")}
                         </h2>
                         <p>{firstPaper.paper.title}</p>
-                        <small>
-                          按当前候选排序选取，阅读清单可以自由增删。
-                        </small>
+                        <small>{t("field.readingStartHint")}</small>
                       </div>
                       <button
                         className="secondary-button"
                         onClick={saveReadingStart}
                       >
                         <Plus size={15} />
-                        收藏前 {Math.min(3, field.core_papers.length)} 篇
+                        {t("field.saveFirst", {
+                          count: Math.min(3, field.core_papers.length),
+                        })}
                       </button>
                     </section>
                   )}
+                  <nav
+                    className="workspace-section-nav"
+                    aria-label={t("field.researchContents")}
+                  >
+                    <a href="#research-directions">
+                      <GitBranch size={15} /> {t("field.directionsEvidence")}
+                    </a>
+                    <a href="#reading-entries">
+                      <BookOpen size={15} /> {t("field.corePapers")} ·{" "}
+                      {field.core_papers.length}
+                    </a>
+                  </nav>
                   <div className="content-columns">
-                    <section className="map-column">
+                    <section
+                      id="research-directions"
+                      className="map-column"
+                      aria-label={t("field.mapDirectionsEvidence")}
+                      tabIndex={-1}
+                    >
                       <div className="map-view-toolbar">
-                        <div className="view-switch" aria-label="关系展示方式">
+                        <div
+                          className="view-switch"
+                          role="group"
+                          aria-label={t("field.relationCategory")}
+                        >
                           <button
+                            aria-pressed={mapPresentation === "graph"}
                             className={
                               mapPresentation === "graph" ? "active" : ""
                             }
-                            onClick={() => setMapPresentation("graph")}
+                            onClick={() => {
+                              presentationChosen.current = true;
+                              setMapPresentation("graph");
+                            }}
                           >
-                            <Network size={14} /> 地图
+                            <Network size={14} /> {t("field.viewMap")}
                           </button>
                           <button
+                            aria-pressed={mapPresentation === "list"}
                             className={
                               mapPresentation === "list" ? "active" : ""
                             }
-                            onClick={() => setMapPresentation("list")}
+                            onClick={() => {
+                              presentationChosen.current = true;
+                              setMapPresentation("list");
+                            }}
                           >
-                            <List size={14} /> 方向与证据
+                            <List size={14} /> {t("field.list")}
                           </button>
                         </div>
                         <span className="map-view-hint">
                           {mapPresentation === "graph"
-                            ? "点击节点，继续向下探索"
-                            : "先看依据，再决定是否深入"}
+                            ? t("field.clickNode")
+                            : t("field.inspectEvidence")}
                         </span>
                       </div>
                       {mapPresentation === "graph" && (
@@ -1343,7 +1605,9 @@ export default function App() {
                             setMaxRelations((old) => (old === 0 ? 3 : 0))
                           }
                         >
-                          {maxRelations === 0 ? "切回概览" : "显示全部关系"}
+                          {maxRelations === 0
+                            ? t("field.overview")
+                            : t("field.allRelations")}
                         </button>
                       )}
                       {mapPresentation === "graph" ? (
@@ -1351,7 +1615,7 @@ export default function App() {
                           fallback={
                             <div className="graph-loading" role="status">
                               <LoaderCircle size={20} className="spin" />
-                              正在准备可交互的领域地图…
+                              {t("loading.graph")}
                             </div>
                           }
                         >
@@ -1370,36 +1634,86 @@ export default function App() {
                         </Suspense>
                       ) : (
                         <section className="relations-panel">
-                          <div className="relation-tabs">
+                          <div
+                            className="relation-tabs"
+                            role="tablist"
+                            aria-label={t("field.relationCategory")}
+                            onKeyDown={(event) => {
+                              if (
+                                ![
+                                  "ArrowLeft",
+                                  "ArrowRight",
+                                  "Home",
+                                  "End",
+                                ].includes(event.key)
+                              )
+                                return;
+                              event.preventDefault();
+                              const next =
+                                event.key === "Home"
+                                  ? "subfields"
+                                  : event.key === "End"
+                                    ? "prerequisites"
+                                    : relationTab === "subfields"
+                                      ? "prerequisites"
+                                      : "subfields";
+                              setRelationTab(next);
+                              document
+                                .getElementById(`relation-tab-${next}`)
+                                ?.focus();
+                            }}
+                          >
                             <button
+                              id="relation-tab-subfields"
+                              role="tab"
+                              aria-selected={relationTab === "subfields"}
+                              aria-controls="relation-panel"
+                              tabIndex={relationTab === "subfields" ? 0 : -1}
                               className={
                                 relationTab === "subfields" ? "active" : ""
                               }
                               onClick={() => setRelationTab("subfields")}
                             >
-                              研究分支 <b>{field.subfields.length}</b>
+                              {t("field.subfields")}{" "}
+                              <b>{field.subfields.length}</b>
                             </button>
                             <button
+                              id="relation-tab-prerequisites"
+                              role="tab"
+                              aria-selected={relationTab === "prerequisites"}
+                              aria-controls="relation-panel"
+                              tabIndex={
+                                relationTab === "prerequisites" ? 0 : -1
+                              }
                               className={
                                 relationTab === "prerequisites" ? "active" : ""
                               }
                               onClick={() => setRelationTab("prerequisites")}
                             >
-                              前置领域 <b>{field.prerequisites.length}</b>
+                              {t("field.prerequisiteFields")}{" "}
+                              <b>{field.prerequisites.length}</b>
                             </button>
                           </div>
-                          <RelationEvidenceList
-                            field={field}
-                            kind={relationTab}
-                            minConfidence={minConfidence}
-                            onExplore={exploreNode}
-                          />
+                          <div
+                            id="relation-panel"
+                            role="tabpanel"
+                            aria-labelledby={`relation-tab-${relationTab}`}
+                            tabIndex={0}
+                          >
+                            <RelationEvidenceList
+                              field={field}
+                              kind={relationTab}
+                              minConfidence={minConfidence}
+                              onExplore={exploreNode}
+                              onResetFilters={() => setMinConfidence(0)}
+                            />
+                          </div>
                         </section>
                       )}
                       <details className="map-options">
                         <summary>
                           <Layers size={13} />
-                          图谱与关系筛选
+                          {t("field.graphOptions")}
                           <ChevronRight size={13} />
                         </summary>
                         <div>
@@ -1411,7 +1725,7 @@ export default function App() {
                                 setShowPrerequisites(event.target.checked)
                               }
                             />
-                            显示前置领域
+                            {t("field.showPrerequisites")}
                           </label>
                           <label>
                             <input
@@ -1421,26 +1735,26 @@ export default function App() {
                                 setShowSubfields(event.target.checked)
                               }
                             />
-                            显示研究分支
+                            {t("field.showSubfields")}
                           </label>
                           <label>
-                            展开层数
+                            {t("field.depth")}
                             <select
-                              aria-label="展开层数"
+                              aria-label={t("field.depth")}
                               value={depth}
                               onChange={(event) =>
                                 setDepth(Number(event.target.value))
                               }
                             >
-                              <option value={1}>一层</option>
-                              <option value={2}>两层 · 仅已探索领域</option>
+                              <option value={1}>{t("field.oneLevel")}</option>
+                              <option value={2}>{t("field.twoLevels")}</option>
                             </select>
                           </label>
                           <label className="strength-filter">
-                            关系判断最低值{" "}
+                            {t("field.confidence")}{" "}
                             <span>{Math.round(minConfidence * 100)}%</span>
                             <input
-                              aria-label="关系判断最低值"
+                              aria-label={t("field.confidence")}
                               type="range"
                               min={0}
                               max={1}
@@ -1451,88 +1765,147 @@ export default function App() {
                               }
                             />
                           </label>
-                          <p>
-                            模型判断不是统计概率；筛选只用于减少图中关系，不代表证据已经验证。
-                          </p>
+                          <p>{t("field.confidenceBoundary")}</p>
                         </div>
                       </details>
                     </section>
-                    <DetailPanel
-                      field={field}
-                      onExplore={exploreNode}
-                      busy={busy}
-                      onSavePaper={addPaper}
-                      savedPaperIds={savedPaperIds}
-                    />
+                    <div
+                      id="reading-entries"
+                      className="reading-entries"
+                      aria-label={t("field.corePapers")}
+                      role="region"
+                      tabIndex={-1}
+                    >
+                      <DetailPanel
+                        field={field}
+                        onExplore={exploreNode}
+                        busy={busy}
+                        onSavePaper={addPaper}
+                        savedPaperIds={savedPaperIds}
+                      />
+                    </div>
                   </div>
                   <footer className="workspace-footer">
                     <span>
                       <ShieldCheck size={13} />
                       {field.paper_source === "demo"
-                        ? "预设领域示例，真实书目；不调用外部服务。"
-                        : "基于候选论文的书目与摘要分析，关系仍需结合原文核对。"}
+                        ? t("field.demoFooter")
+                        : t("field.liveFooter")}
                     </span>
                     <span>
-                      {field.candidate_count} 篇候选 ·{" "}
-                      {field.evidence_papers?.length ?? 0} 篇关系支持书目
+                      {t("field.candidateCount", {
+                        candidates: field.candidate_count,
+                        evidence: field.evidence_papers?.length ?? 0,
+                      })}
                     </span>
                   </footer>
                 </>
               ) : (
                 <div className="initial-analysis">
                   <Compass size={38} />
-                  <h1>正在准备你的研究地图</h1>
-                  <p>检索返回后，你可以先看论文，再等待领域关系和阅读建议。</p>
+                  <h1>
+                    {busy
+                      ? t("field.preparingTitle")
+                      : t("field.incompleteTitle")}
+                  </h1>
+                  <p>
+                    {busy
+                      ? t("field.preparingDescription")
+                      : t("field.incompleteDescription")}
+                  </p>
                 </div>
               )}
             </>
           )}
         </main>
       </div>
-      {(busy || resolving) && (
-        <div className="loading-toast" role="status">
-          <span className="loading-orbit">
-            <LoaderCircle size={20} className="spin" />
-          </span>
-          <div>
-            <strong>
-              {resolving ? "先识别你的研究方向" : `正在探索 ${loadingName}`}
-            </strong>
-            <span>
-              {resolving
-                ? "把问题转为检索范围，并检查可能匹配的论文…"
-                : loadingStage}
+      <div className="toast-stack">
+        {(busy || resolving) && (
+          <div className="loading-toast" role="status">
+            <span className="loading-orbit">
+              <LoaderCircle size={20} className="spin" />
             </span>
-            <small>
-              已用时 {elapsed} 秒 ·{" "}
-              {resolving
-                ? "离开当前页面会取消方向识别"
-                : "可以先切换页面，分析不会抢占当前视图"}
-            </small>
+            <div>
+              <strong>
+                {resolving
+                  ? t("loading.resolveTitle")
+                  : t("loading.exploreDescription", { name: loadingName })}
+              </strong>
+              <span>
+                {resolving ? t("loading.resolveDescription") : t(loadingStage)}
+              </span>
+              <small>
+                {t("loading.elapsed", { seconds: elapsed })} ·{" "}
+                {resolving
+                  ? t("loading.resolveLeave")
+                  : t("loading.exploreContinue")}
+              </small>
+            </div>
+            <button
+              className="text-button"
+              onClick={() =>
+                resolving
+                  ? dismissResolution()
+                  : requests.cancel(activeRequest.current)
+              }
+            >
+              {t("loading.cancel")}
+            </button>
           </div>
-          <button
-            className="text-button"
-            onClick={() =>
-              resolving
-                ? dismissResolution()
-                : requests.cancel(activeRequest.current)
-            }
+        )}
+        {toast && (
+          <div className="action-toast" role="status">
+            <Check size={16} />
+            <span>{toast}</span>
+            <button
+              className="icon-button"
+              aria-label={t("status.toastClose")}
+              onClick={() => setToast("")}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+      </div>
+      {confirmHistoryClear && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setConfirmHistoryClear(false)}
+        >
+          <section
+            className="help-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="clear-history-title"
+            aria-describedby="clear-history-description"
+            onClick={(event) => event.stopPropagation()}
           >
-            取消
-          </button>
-        </div>
-      )}
-      {toast && (
-        <div className="action-toast" role="status">
-          <Check size={16} />
-          {toast}
-          <button
-            className="icon-button"
-            aria-label="关闭操作提示"
-            onClick={() => setToast("")}
-          >
-            <X size={14} />
-          </button>
+            <span className="eyebrow">
+              <History size={15} /> {t("dialogs.clearHistoryEyebrow")}
+            </span>
+            <h2 id="clear-history-title">{t("dialogs.clearHistoryTitle")}</h2>
+            <p id="clear-history-description">
+              {t("dialogs.clearHistoryDescription")}
+            </p>
+            <div className="export-buttons">
+              <button
+                className="secondary-button"
+                autoFocus
+                onClick={() => setConfirmHistoryClear(false)}
+              >
+                {t("dialogs.keepRecords")}
+              </button>
+              <button
+                className="secondary-button danger-button"
+                onClick={() => {
+                  clearHistory();
+                  setConfirmHistoryClear(false);
+                }}
+              >
+                {t("dialogs.clearHistory")}
+              </button>
+            </div>
+          </section>
         </div>
       )}
       {exportDocument && (
@@ -1547,24 +1920,26 @@ export default function App() {
             <button
               className="close-modal icon-button"
               autoFocus
-              aria-label="关闭导出"
+              aria-label={t("dialogs.closeExport")}
               onClick={() => setExportDocument(null)}
             >
               <X size={20} />
             </button>
             <span className="eyebrow">
-              <FileText size={15} /> 可带走的研究材料
+              <FileText size={15} /> {t("dialogs.exportEyebrow")}
             </span>
             <h2 id="export-title">{exportDocument.title}</h2>
             <p>
               {exportDocument.format === "json"
-                ? "结构化地图供其他工具继续处理。"
-                : "保存或复制这份带论文出处的材料，继续你的阅读与讨论。"}
-              文件可能包含研究主题和私人笔记，请按需分享。
+                ? t("dialogs.exportMapDescription")
+                : t("dialogs.exportBriefDescription")}{" "}
+              {t("dialogs.exportPrivacy")}
             </p>
             <textarea
               aria-label={
-                exportDocument.format === "json" ? "地图 JSON" : "导出文档内容"
+                exportDocument.format === "json"
+                  ? t("dialogs.mapJson")
+                  : t("dialogs.documentContent")
               }
               readOnly
               value={exportDocument.content}
@@ -1577,7 +1952,10 @@ export default function App() {
                 download={exportDocument.filename}
               >
                 <Download size={16} />
-                下载 {exportDocument.format === "json" ? "JSON" : "Markdown"}
+                {t("dialogs.download")}{" "}
+                {exportDocument.format === "json"
+                  ? t("dialogs.json")
+                  : t("dialogs.markdown")}
               </a>
               <button
                 className="secondary-button"
@@ -1585,11 +1963,11 @@ export default function App() {
                   void navigator.clipboard
                     ?.writeText(exportDocument.content)
                     .then(() => setExportCopied(true))
-                    .catch(() => setToast("也可以选中上方文本直接复制。"));
+                    .catch(() => setToast(t("toast.copyFallback")));
                 }}
               >
                 {exportCopied ? <Check size={16} /> : <Copy size={16} />}
-                {exportCopied ? "已复制" : "复制内容"}
+                {exportCopied ? t("dialogs.copied") : t("dialogs.copyContent")}
               </button>
             </div>
           </section>
@@ -1607,61 +1985,49 @@ export default function App() {
             <button
               className="close-modal icon-button"
               autoFocus
-              aria-label="关闭使用指南"
+              aria-label={t("dialogs.closeHelp")}
               onClick={() => setShowHelp(false)}
             >
               <X size={20} />
             </button>
             <span className="eyebrow">
-              <Compass size={15} /> 开始你的研究
+              <Compass size={15} /> {t("dialogs.helpEyebrow")}
             </span>
-            <h2 id="help-title">从一个好问题，到下一篇论文</h2>
+            <h2 id="help-title">{t("dialogs.helpTitle")}</h2>
             <ol>
               <li>
-                <strong>写下研究问题，确认方向</strong>
-                <p>
-                  中文、简称都可以。遇到多种可能，选择适合自己意图的方向后再开始分析。
-                </p>
+                <strong>{t("dialogs.helpStep1Title")}</strong>
+                <p>{t("dialogs.helpStep1")}</p>
               </li>
               <li>
-                <strong>查看地图，也查看依据</strong>
-                <p>
-                  前置领域帮助补知识，研究分支帮助找方向。切换“方向与证据”，展开支持书目并核对来源。
-                </p>
+                <strong>{t("dialogs.helpStep2Title")}</strong>
+                <p>{t("dialogs.helpStep2")}</p>
               </li>
               <li>
-                <strong>把论文留在自己的清单里</strong>
-                <p>
-                  加入阅读清单、标记已读、记录疑问。研究简报和阅读笔记均可导出
-                  Markdown。
-                </p>
+                <strong>{t("dialogs.helpStep3Title")}</strong>
+                <p>{t("dialogs.helpStep3")}</p>
               </li>
             </ol>
             <div className="help-modes">
-              <h3>哪种模式适合现在？</h3>
+              <h3>{t("dialogs.helpModesTitle")}</h3>
               <p>
-                <b>自动检索：</b>
-                先尝试真实论文服务；仅对已知的示例领域提供明确标识的离线回退。
+                <b>{t("dialogs.helpAutoLabel")}</b>
+                {t("dialogs.helpAuto")}
                 <br />
-                <b>实时检索：</b>使用真实论文服务，失败时直接说明。
+                <b>{t("dialogs.helpLiveLabel")}</b> {t("dialogs.helpLive")}
                 <br />
-                <b>离线示例：</b>体验 NHSE
-                及预设分支；书目已核对，关系和阅读排序为预设。
+                <b>{t("dialogs.helpDemoLabel")}</b> {t("dialogs.helpDemo")}
               </p>
-              <p>
-                实时分析会向检索与模型服务发送研究问题、候选论文书目和摘要。当前不读取论文全文，也不生成经过验证的系统综述。
-              </p>
-              <p>
-                研究记录和阅读笔记只保存在当前浏览器；换设备不会自动同步。清除探索记录不会删除阅读清单。
-              </p>
+              <p>{t("dialogs.helpPrivacy")}</p>
+              <p>{t("dialogs.helpLocal")}</p>
               <span className="service-note">
                 {(health?.llm_ready ?? health?.llm_configured)
-                  ? "此环境已配置模型分析，可尝试实时研究。"
-                  : "此环境未配置完整模型分析。离线示例与明确关键词的论文检索仍可使用。"}
+                  ? t("dialogs.serviceReady")
+                  : t("dialogs.serviceUnavailable")}
               </span>
             </div>
             <button className="primary" onClick={() => setShowHelp(false)}>
-              开始研究
+              {t("dialogs.startResearch")}
               <ArrowRight size={16} />
             </button>
           </section>

@@ -116,6 +116,20 @@ def test_retrieval_removes_conflicting_subject_before_model_assessment():
     assert any('物种范围冲突' in warning for warning in result.warnings)
 
 
+def test_bilayer_scope_checks_exclusive_abstract_subject_without_blocking_comparisons():
+    field = 'twisted bilayer graphene superconductivity'
+    generic_title = 'Superconductivity in twisted graphene devices'
+    assert scope_mismatch(field, None, generic_title,
+                          'We measure a trilayer device under gate control.')
+    assert scope_mismatch(field, None, '', 'We measure superconductivity in multilayer graphene.')
+    assert scope_mismatch(field, None, generic_title,
+                          'We compare bilayer and trilayer devices.') is None
+    assert scope_mismatch(field, 'Compare bilayer and trilayer superconductivity', generic_title,
+                          'We measure a trilayer device.') is None
+    assert scope_mismatch(field, None, 'Twisted bilayer graphene superconductivity',
+                          'We compare our system with earlier multilayer devices.') is None
+
+
 def test_scope_gate_uses_verified_identity_instead_of_uncorrected_index_title():
     class Planner:
         async def generate_structured(self, **kwargs):

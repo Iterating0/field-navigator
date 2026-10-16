@@ -103,6 +103,9 @@ def scope_mismatch(
     strict_bilayer = _requested(BILAYER, query) and not _requested(OTHER_LAYER, query)
     if strict_bilayer and OTHER_LAYER.search(subject) and not BILAYER.search(subject):
         return '层数范围冲突：主体不是双层系统'
+    if (strict_bilayer and not BILAYER.search(subject)
+            and OTHER_LAYER.search(metadata) and not BILAYER.search(metadata)):
+        return '层数范围冲突：元数据仅明确三层或多层系统'
     return None
 
 

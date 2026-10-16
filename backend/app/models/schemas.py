@@ -5,7 +5,13 @@ from datetime import datetime, timezone
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-CURRENT_QUALITY_REVISION = 10
+CURRENT_QUALITY_REVISION = 28
+
+# Keep the wire value intentionally small and explicit.  These values are also
+# part of analysis/cache keys, so do not silently infer a locale from a free
+# form user string in the service layer.
+Language = Literal['zh-CN', 'en']
+DEFAULT_LANGUAGE: Language = 'zh-CN'
 
 
 def normalize_field(name: str) -> str:
@@ -74,6 +80,12 @@ class PaperJudgment(StrictModel):
     role: Literal['primary', 'review', 'background', 'non_research', 'unknown'] = 'unknown'
     evidence_basis: Literal['abstract', 'title', 'unverified'] = 'unverified'
     evidence_quote: str = Field(default='', max_length=300)
+    # Internal coverage annotation from the paper-judgment phase.  These IDs
+    # are request-scoped retrieval needs, never scientific evidence; the
+    # decomposition stage clears them when the supplied quote is not an exact
+    # abstract excerpt.  A default keeps legacy stubs and cached judgments
+    # source-compatible.
+    evidence_need_ids: list[str] = Field(default_factory=list, max_length=3)
 
 
 class Decomposition(StrictModel):
@@ -116,6 +128,10 @@ class FieldNode(BaseModel):
     quality_revision: int = 0  # A missing field means legacy/unverified semantics.
     search_queries: list[str] = Field(default_factory=list)
     research_question: str | None = None
+    # Missing on pre-bilingual cache entries means the original Simplified
+    # Chinese output.  Keeping a default makes old persisted responses safe to
+    # read while new language-specific keys prevent cross-locale reuse.
+    language: Language = DEFAULT_LANGUAGE
 
 
 class ExploreRequest(BaseModel):
@@ -123,6 +139,7 @@ class ExploreRequest(BaseModel):
     mode: Literal['auto', 'live', 'demo'] = 'auto'
     refresh: bool = False
     research_question: str | None = Field(default=None, max_length=1000)
+    language: Language = DEFAULT_LANGUAGE
 
     @field_validator('research_question')
     @classmethod
@@ -142,6 +159,7 @@ class ResolveRequest(BaseModel):
     query: str = Field(min_length=2, max_length=1000)
     mode: Literal['auto', 'live', 'demo'] = 'auto'
     refresh: bool = False
+    language: Language = DEFAULT_LANGUAGE
 
     @field_validator('query')
     @classmethod
@@ -165,3 +183,6 @@ class ResolveResult(StrictModel):
     message: str = Field(min_length=1, max_length=1000)
     source: Literal['llm', 'alias', 'direct']
     candidates: list[ResolveCandidate] = Field(max_length=3)
+    # Old resolver artifacts validate as Chinese through the default; the
+    # resolver still checks this value against the requested cache key.
+    language: Language = DEFAULT_LANGUAGE

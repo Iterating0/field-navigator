@@ -228,6 +228,8 @@ class CompatibleLLMProvider:
                 'messages': [{'role': 'system', 'content': system + '\nJSON schema:\n' + json.dumps(strict_schema)},
                              {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}]}
         body.update(self.settings.thinking_options)
+        if self.settings.structured_temperature is not None:
+            body['temperature'] = self.settings.structured_temperature
         body['max_tokens'] = self.settings.llm_max_tokens
         url = self.settings.llm_base_url.rstrip('/') + '/chat/completions'
         headers = {'Authorization': f'Bearer {self.settings.llm_api_key}'}
@@ -268,6 +270,25 @@ class CompatibleLLMProvider:
             if schema_format_unavailable(exc.response):
                 raise ProviderError('LLM 服务不支持当前结构化输出格式。请将 .env 中的 '
                                     'LLM_RESPONSE_FORMAT 设为 auto 或 json_object，并重启后端。') from exc
-            raise ProviderError(f'LLM 服务返回 HTTP {exc.response.status_code}。请检查 key、模型和结构化输出支持。') from exc
+            status = exc.response.status_code
+            if 500 <= status <= 599:
+                # An upstream outage is operationally different from a bad
+                # credential. Keep the upstream status visible while avoiding
+                # its body (which may contain provider internals or secrets),
+                # and do not retry business requests here.
+                raise ProviderError(
+                    f'LLM 服务暂时不可用（上游 HTTP {status}），请稍后重试。', 503,
+                ) from exc
+            if status in (401, 403):
+                raise ProviderError(
+                    f'LLM 服务鉴权失败（上游 HTTP {status}），请检查 key 和账号权限配置。', 502,
+                ) from exc
+            if status == 429:
+                raise ProviderError(
+                    'LLM 请求受到限流（上游 HTTP 429），请稍后重试。', 429,
+                ) from exc
+            raise ProviderError(
+                f'LLM 服务返回 HTTP {status}。请检查请求格式、模型配置和结构化输出支持。',
+            ) from exc
         except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError) as exc:
             raise ProviderError('LLM 响应无效或网络异常；结果未写入缓存。') from exc

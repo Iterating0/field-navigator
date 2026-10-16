@@ -115,6 +115,27 @@ def test_auto_prefers_strict_schema_when_supported():
     assert_strict_schema(sent_schema)
 
 
+@pytest.mark.parametrize(('model', 'configured', 'expected'), [
+    ('deepseek-flash', None, 0.0),
+    ('other-reasoning-model', None, None),
+    ('deepseek-flash', .3, .3),
+])
+def test_structured_sampling_is_low_randomness_only_for_supported_chat_models(model, configured, expected):
+    requests = []
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return completion()
+    async def run():
+        config = Settings(_env_file=None, llm_api_key='test-key', llm_model=model,
+                          llm_temperature=configured)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            await generate(CompatibleLLMProvider(http, config))
+    asyncio.run(run())
+    assert requests[0].get('temperature') == expected
+    if expected is None:
+        assert 'temperature' not in requests[0]
+
+
 def test_auto_does_not_retry_invalid_schema_even_when_error_mentions_unsupported():
     requests = []
     def handle(request):
@@ -182,6 +203,73 @@ def test_auto_does_not_retry_unrelated_errors(status, error):
     assert len(requests) == 1
 
 
+@pytest.mark.parametrize('status', [500, 502, 503, 504])
+def test_upstream_5xx_is_temporary_unavailable_without_schema_fallback(status):
+    requests = []
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(status, text='upstream body must not leak')
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            provider = CompatibleLLMProvider(http, settings())
+            with pytest.raises(ProviderError) as caught:
+                await generate(provider)
+            return provider, caught.value
+
+    provider, error = asyncio.run(run())
+    assert error.status_code == 503
+    assert '暂时不可用' in str(error) and '稍后重试' in str(error)
+    assert 'key' not in str(error).lower()
+    assert 'upstream body' not in str(error)
+    assert provider._schema_unavailable is False
+    assert len(requests) == 1
+    assert requests[0]['response_format']['type'] == 'json_schema'
+
+
+@pytest.mark.parametrize('status', [401, 403])
+def test_upstream_auth_errors_keep_configuration_guidance(status):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(status, text='provider auth details must not leak')
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            with pytest.raises(ProviderError) as caught:
+                await generate(CompatibleLLMProvider(http, settings()))
+            return caught.value
+
+    error = asyncio.run(run())
+    assert error.status_code == 502
+    assert f'HTTP {status}' in str(error)
+    assert '鉴权' in str(error) and 'key' in str(error)
+    assert 'provider auth details' not in str(error)
+    assert len(requests) == 1
+
+
+def test_upstream_rate_limit_keeps_429_status_without_retry():
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(429, text='provider rate limit details must not leak')
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            with pytest.raises(ProviderError) as caught:
+                await generate(CompatibleLLMProvider(http, settings()))
+            return caught.value
+
+    error = asyncio.run(run())
+    assert error.status_code == 429
+    assert 'HTTP 429' in str(error) and '稍后重试' in str(error)
+    assert 'provider rate limit details' not in str(error)
+    assert len(requests) == 1
+
+
 @pytest.mark.parametrize('mode', ['json_schema', 'json_object'])
 def test_explicit_modes_are_honored_without_fallback(mode):
     requests = []
@@ -239,6 +327,10 @@ def test_invalid_json_mode_result_does_not_enter_cache(tmp_path):
             async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
                 explorer = app.state.explorer
                 explorer.papers = Papers()
+                # This integration test supplies a deterministic paper source;
+                # disable the optional live retriever created for configured
+                # model settings so it cannot reach OpenAlex.
+                explorer.retriever = None
                 explorer.decomposer = FieldDecomposer(CompatibleLLMProvider(http, config))
                 with pytest.raises(ProviderError, match='schema'):
                     await explorer.explore('two dimensional electron gas')
@@ -285,12 +377,24 @@ def test_compact_ids_restore_evidence_and_judgments():
 
         async def generate_structured(self, **kwargs):
             self.calls += 1
+            if set(kwargs['schema']['properties']) == {'summary'}:
+                assert 'current_summary' not in kwargs['payload']
+                return {'summary': 'The displayed excerpt supports branch evidence.'}
+            if 'source-scope classifier' in kwargs.get('system', ''):
+                return {'papers': [
+                    {'paper_id': paper['id'], 'scope_relation': 'direct',
+                     'reason': 'The paper matches the requested study object.'}
+                    for paper in kwargs['payload']['papers']
+                ]}
             if 'independent evidence auditor' in kwargs['system']:
                 assert kwargs['payload']['papers'][0]['id'] == paper.id
                 return {'audits': [{
                     'relation_id': 'r1',
                     'verdict': 'supported',
                     'reason': '摘要直接支持该关系。',
+                    'corrected_name': 'Branch evidence',
+                    'supported_quote_ids': ['r1:q1'],
+                    'scope_relation': 'direct',
                 }]}
             assert kwargs['payload']['papers'][0]['id'] == 'p1'
             return {'summary': 'Short summary', 'prerequisites': [], 'subfields': [
@@ -305,7 +409,7 @@ def test_compact_ids_restore_evidence_and_judgments():
 
     llm = LLM()
     result = asyncio.run(FieldDecomposer(llm).decompose('Field', [paper]))
-    assert llm.calls == 2
+    assert llm.calls == 4
     assert result.subfields[0].evidence_paper_ids == [paper.id]
     assert result.subfields[0].evidence_quotes[0].paper_id == paper.id
     assert result.paper_judgments[0].paper_id == paper.id

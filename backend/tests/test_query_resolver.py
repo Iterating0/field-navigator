@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app.api.fields import resolve as resolve_endpoint
+from app.api.fields import resolve as resolve_endpoint, _watch_client_disconnect
 from app.config import Settings
 from app.db.cache import FieldCache
 from app.main import create_app
@@ -25,7 +25,36 @@ class ResolverPapers:
 
     async def search_papers(self, query, limit=40):
         self.queries.append((query, limit))
-        return self.by_query.get(query, self.papers)
+        result = self.by_query.get(query, self.papers)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+
+def test_disconnect_watcher_honours_cancellation_consumed_by_request_probe():
+    async def run():
+        entered = asyncio.Event()
+
+        class RequestProbe:
+            swallowed = False
+
+            async def is_disconnected(self):
+                entered.set()
+                try:
+                    await asyncio.sleep(10)
+                except asyncio.CancelledError:
+                    if self.swallowed:
+                        raise
+                    self.swallowed = True
+                    return False
+
+        task = asyncio.create_task(_watch_client_disconnect(RequestProbe()))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=.3)
+
+    asyncio.run(run())
 
 
 class ResolverLLM:
@@ -90,7 +119,15 @@ def test_ambiguous_chinese_input_without_model_only_clarifies(tmp_path):
 def test_llm_candidates_are_probed_with_exact_queries_and_cached(tmp_path):
     with make_client(tmp_path, llm_api_key='test-key', llm_model='test-model') as client:
         papers = ResolverPapers(by_query={'unsupported direction': []})
-        llm = ResolverLLM()
+        llm = ResolverLLM(result={
+            'candidates': [
+                {'query': 'quantum transport', 'name': 'Quantum transport',
+                 'summary': 'Transport phenomena in quantum systems.'},
+                {'query': 'unsupported direction', 'name': 'Unsupported direction',
+                 'summary': 'A second mutually exclusive interpretation.'},
+            ],
+            'multiple_interpretations': True,
+        })
         client.app.state.resolver.papers = papers
         client.app.state.resolver.llm = llm
         client.app.state.resolver.llm_ready = True
@@ -105,6 +142,109 @@ def test_llm_candidates_are_probed_with_exact_queries_and_cached(tmp_path):
         assert papers.queries == [('quantum transport', 6), ('unsupported direction', 6)]
         assert llm.calls == 1
         assert llm.payloads[0] == {'user_query': '我想研究量子输运'}
+
+
+def test_cohesive_request_does_not_promote_surviving_complementary_facet(tmp_path):
+    """A failed central probe must not turn a subquestion into the scope."""
+    central = 'tidal deformability GW170817 neutron star equation of state constraints'
+    facet = 'electromagnetic counterparts GW170817 systematic errors'
+    result = {
+        'candidates': [
+            {'query': central, 'name': 'Central target',
+             'summary': 'The complete question in one search target.'},
+            {'query': facet, 'name': 'Complementary facet',
+             'summary': 'A requested error facet, not a separate interpretation.'},
+        ],
+        # The model must explicitly opt into mutually exclusive meanings.
+        'multiple_interpretations': False,
+    }
+    with make_client(tmp_path, llm_api_key='test-key', llm_model='test-model') as client:
+        papers = ResolverPapers(by_query={
+            central: ProviderError('central probe timed out', 504),
+            facet: [Paper(id='facet', title='Electromagnetic counterpart evidence')],
+        })
+        client.app.state.resolver.papers = papers
+        client.app.state.resolver.llm = ResolverLLM(result=result)
+        client.app.state.resolver.llm_ready = True
+
+        response = client.post('/api/fields/resolve', json={
+            'query': 'GW170817 双中子星并合的潮汐形变怎样约束中子星状态方程，需要区分哪些系统误差？',
+            'mode': 'live', 'refresh': True,
+        })
+
+        payload = response.json()
+        assert response.status_code == 200
+        assert payload['status'] == 'clarify'
+        assert payload['candidates'] == []
+        assert papers.queries == [(central, 6)]
+        assert asyncio.run(client.app.state.resolver.cached(
+            payload['query'], 'live')) is None
+
+
+def test_compound_center_target_keeps_hard_scope_without_keyword_stuffing_rejection(tmp_path):
+    """A bounded compound target remains usable when a model slightly overruns 12 words."""
+    target = (
+        'inorganic solid electrolyte lithium metal battery dendrite filament '
+        'formation current density mechanical defects stack pressure'
+    )
+    assert len(target.split()) == 15
+    result = {
+        'candidates': [{
+            'query': target,
+            'name': 'Solid electrolyte filament formation',
+            'summary': 'Compare current density, mechanical defects, and stack pressure within the stated system.',
+        }],
+        'multiple_interpretations': False,
+    }
+    with make_client(tmp_path, llm_api_key='test-key', llm_model='test-model') as client:
+        papers = ResolverPapers(by_query={
+            target: [Paper(id='solid-center', title='Solid electrolyte filament formation')],
+        })
+        resolver = client.app.state.resolver
+        resolver.papers = papers
+        resolver.llm = ResolverLLM(result=result)
+        resolver.llm_ready = True
+
+        payload = client.post('/api/fields/resolve', json={
+            'query': '无机固态电解质锂金属电池中枝晶或丝状体的形成与电流、缺陷、堆压因素',
+            'mode': 'live', 'refresh': True,
+        }).json()
+
+        assert payload['status'] == 'ready'
+        assert [candidate['query'] for candidate in payload['candidates']] == [target]
+        assert papers.queries == [(target, 6)]
+
+
+def test_true_mutual_ambiguity_keeps_each_interpretation(tmp_path):
+    """Only an explicit ambiguity marker permits multiple probes/results."""
+    first = 'cell type deconvolution spatial transcriptomics'
+    second = 'spot deconvolution spatial transcriptomics'
+    result = {
+        'candidates': [
+            {'query': first, 'name': 'Cell type deconvolution',
+             'summary': 'Interpretation one.'},
+            {'query': second, 'name': 'Spot deconvolution',
+             'summary': 'Interpretation two.'},
+        ],
+        'multiple_interpretations': True,
+    }
+    with make_client(tmp_path, llm_api_key='test-key', llm_model='test-model') as client:
+        papers = ResolverPapers(by_query={
+            first: [Paper(id='first', title='Cell type deconvolution evidence')],
+            second: [Paper(id='second', title='Spot deconvolution evidence')],
+        })
+        client.app.state.resolver.papers = papers
+        client.app.state.resolver.llm = ResolverLLM(result=result)
+        client.app.state.resolver.llm_ready = True
+
+        payload = client.post('/api/fields/resolve', json={
+            'query': '空间转录组中的 deconvolution 到底指细胞类型还是 spot 层面的反卷积？',
+            'mode': 'live', 'refresh': True,
+        }).json()
+
+        assert payload['status'] == 'choose'
+        assert [candidate['query'] for candidate in payload['candidates']] == [first, second]
+        assert papers.queries == [(first, 6), (second, 6)]
 
 
 def test_resolve_deadline_returns_clarify_without_success_cache(tmp_path):
@@ -134,6 +274,30 @@ def test_live_resolve_uses_public_budget(tmp_path):
             'query': '我想研究拓扑材料', 'mode': 'live', 'refresh': True})
         assert first.status_code == 200
         assert denied.status_code == 429
+
+
+@pytest.mark.parametrize('status', [429, 503, 504])
+def test_transient_model_failure_does_not_ask_user_to_change_configuration(tmp_path, status):
+    with make_client(tmp_path, llm_api_key='test-key', llm_model='test-model') as client:
+        class UnavailableLLM:
+            async def generate_structured(self, **kwargs):
+                raise ProviderError('模型服务暂时不可用', status)
+
+        resolver = client.app.state.resolver
+        resolver.llm = UnavailableLLM()
+        resolver.llm_ready = True
+        papers = ResolverPapers()
+        resolver.papers = papers
+        query = '空间转录组如何反卷积'
+        result = client.post('/api/fields/resolve', json={
+            'query': query, 'mode': 'live', 'refresh': True,
+        }).json()
+        assert result['status'] == 'clarify'
+        assert result['candidates'] == []
+        assert '稍后重试' in result['message']
+        assert '检查模型配置' not in result['message']
+        assert papers.queries == []
+        assert asyncio.run(resolver.cached(query, 'live')) is None
 
 
 def test_llm_failure_is_not_mistaken_for_evidence(tmp_path):
@@ -257,6 +421,10 @@ def test_failed_judgment_returns_map_phase_without_full_cache(tmp_path):
                 raise ProviderError('模型额度已用完', 429)
 
         client.app.state.explorer.papers = ResolverPapers()
+        # With a configured model the app also constructs its optional live
+        # retriever; this unit test supplies its own paper provider and should
+        # not reach OpenAlex.
+        client.app.state.explorer.retriever = None
         client.app.state.explorer.decomposer = FailingDecomposer()
         response = client.post('/api/fields/explore', json={
             'query': 'quantum transport', 'mode': 'live'})

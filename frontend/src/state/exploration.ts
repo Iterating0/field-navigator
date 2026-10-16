@@ -1,4 +1,16 @@
-import type { ExploreEvent, FieldNode, Mode } from "../types";
+import {
+  normalizeLanguage,
+  type ExploreEvent,
+  type FieldNode,
+  type Language,
+  type Mode,
+} from "../types/index.ts";
+
+function languageMismatchMessage(language: Language): string {
+  return language === "en"
+    ? "The server returned a different language than requested. Restart or update the service, then try again."
+    : "后端返回的结果语言与当前请求不一致，请重启或更新服务后重试。";
+}
 
 export function normalizeField(name: string) {
   const value = name
@@ -31,8 +43,15 @@ export const requestKey = (
   name: string,
   mode: Mode,
   researchQuestion?: string | null,
+  language: Language = "zh-CN",
 ) => {
-  const base = `${mode}:${normalizeField(name)}`;
+  const requestLanguage = normalizeLanguage(language);
+  // Keep the historical Chinese key byte-for-byte compatible. English gets a
+  // dedicated namespace so the same canonical field/question can never
+  // overwrite a Chinese result in memory or local session storage.
+  const base = `${mode}:${normalizeField(name)}${
+    requestLanguage === "en" ? ":lang:en" : ""
+  }`;
   const question = normalizeResearchQuestion(researchQuestion);
   return question ? `${base}:q:${encodeURIComponent(question)}` : base;
 };
@@ -86,6 +105,7 @@ type FetchField = (
   listener: Listener,
   signal: AbortSignal,
   researchQuestion?: string,
+  language?: Language,
 ) => Promise<FieldNode>;
 type Job = {
   controller: AbortController;
@@ -135,9 +155,11 @@ export class ExplorationRequests {
     refresh: boolean,
     listener: Listener,
     researchQuestion?: string,
+    language: Language = "zh-CN",
   ): Promise<FieldNode> {
     const normalizedQuestion = normalizeResearchQuestion(researchQuestion);
-    const key = requestKey(name, mode, normalizedQuestion);
+    const requestLanguage = normalizeLanguage(language);
+    const key = requestKey(name, mode, normalizedQuestion, requestLanguage);
     const cached = this.cache.get(key);
     if (cached && !refresh) return { ...cached, cache_hit: true };
     const existing = this.jobs.get(key);
@@ -164,22 +186,38 @@ export class ExplorationRequests {
           refresh,
           (event) => {
             const contextualEvent =
-              normalizedQuestion &&
-              (event.type === "partial" || event.type === "complete") &&
-              !normalizeResearchQuestion(event.field.research_question)
-                ? {
-                    ...event,
-                    field: {
-                      ...event.field,
-                      research_question: normalizedQuestion,
-                    },
-                  }
+              event.type === "partial" || event.type === "complete"
+                ? (() => {
+                    if (
+                      event.field.language !== undefined &&
+                      event.field.language !== requestLanguage
+                    )
+                      throw new Error(languageMismatchMessage(requestLanguage));
+                    return {
+                      ...event,
+                      field: {
+                        ...event.field,
+                        // Mocks and old adapters may omit the marker. The
+                        // production API validates it before this layer, so
+                        // an omitted marker can retain the requested language;
+                        // an explicit mismatch is always rejected.
+                        language: event.field.language ?? requestLanguage,
+                        ...(normalizedQuestion &&
+                        !normalizeResearchQuestion(
+                          event.field.research_question,
+                        )
+                          ? { research_question: normalizedQuestion }
+                          : {}),
+                      },
+                    };
+                  })()
                 : event;
             job.latest = contextualEvent;
             for (const fn of job.listeners) fn(contextualEvent);
           },
           job.controller.signal,
           normalizedQuestion || undefined,
+          requestLanguage,
         ),
       )
       .then((result) => {
@@ -193,14 +231,28 @@ export class ExplorationRequests {
           !normalizeResearchQuestion(result.research_question)
             ? { ...result, research_question: normalizedQuestion }
             : result;
-        if (contextualResult.phase === "complete") {
-          this.cache.set(key, contextualResult);
+        if (
+          contextualResult.language !== undefined &&
+          contextualResult.language !== requestLanguage
+        )
+          throw new Error(languageMismatchMessage(requestLanguage));
+        const languageResult = {
+          ...contextualResult,
+          language: contextualResult.language ?? requestLanguage,
+        };
+        if (languageResult.phase === "complete") {
+          this.cache.set(key, languageResult);
           this.cache.set(
-            requestKey(contextualResult.name, mode, normalizedQuestion),
-            contextualResult,
+            requestKey(
+              languageResult.name,
+              mode,
+              normalizedQuestion,
+              requestLanguage,
+            ),
+            languageResult,
           );
         }
-        return contextualResult;
+        return languageResult;
       })
       .finally(() => {
         if (this.jobs.get(key) === job) this.jobs.delete(key);

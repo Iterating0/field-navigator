@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { FieldNode } from "../src/types/index.ts";
 import {
+  CURRENT_QUALITY_REVISION,
   LEGACY_SESSION_STORAGE_KEY,
   SESSION_STORAGE_KEY,
   clearSession,
@@ -53,7 +54,7 @@ function field(
     warnings: [],
     created_at: "2026-10-13T00:00:00Z",
     cache_hit: false,
-    quality_revision: 10,
+    quality_revision: CURRENT_QUALITY_REVISION,
   };
 }
 
@@ -81,6 +82,41 @@ test("defaults are stable and v1 migration never fabricates a snapshot", () => {
   assert.deepEqual(migrated.snapshots, {});
   assert.deepEqual(migrated.trail, []);
   assert.equal(migrated.history[0]?.mode, "live");
+});
+
+test("legacy records default to Chinese while bilingual snapshots stay isolated", () => {
+  const storage = new MemoryStorage();
+  const chinese = field("Same canonical field");
+  const english = { ...field("Same canonical field"), language: "en" as const };
+  storage.setItem(
+    SESSION_STORAGE_KEY,
+    JSON.stringify({
+      mode: "auto",
+      current: chinese.name,
+      history: [
+        { name: chinese.name, parent: null, mode: "auto" },
+        { name: english.name, parent: null, mode: "auto", language: "en" },
+      ],
+      trail: [],
+      snapshots: {
+        [requestKey(chinese.name, "auto")]: chinese,
+        [requestKey(english.name, "auto", null, "en")]: english,
+      },
+    }),
+  );
+
+  const loaded = loadSession(storage);
+  assert.equal(loaded.history[0]?.language, "zh-CN");
+  assert.equal(loaded.history[1]?.language, "en");
+  assert.equal(
+    loaded.snapshots[requestKey(chinese.name, "auto")]?.language,
+    "zh-CN",
+  );
+  assert.equal(
+    loaded.snapshots[requestKey(english.name, "auto", null, "en")]?.language,
+    "en",
+  );
+  assert.equal(Object.keys(loaded.snapshots).length, 2);
 });
 
 test("demo and live snapshots are isolated and arbitrary fields are dropped", () => {

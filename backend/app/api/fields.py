@@ -20,15 +20,24 @@ def admission(body, request, cache_probe=None):
 async def _watch_client_disconnect(request: Request):
     """Wait until the ASGI request reports that its client has gone away."""
     while True:
-        if await request.is_disconnected():
+        disconnected = await request.is_disconnected()
+        # Starlette probes receive() inside an AnyIO CancelScope. A cancel
+        # arriving during that probe can be consumed by the scope, leaving this
+        # watcher alive and the completed resolver waiting in its finally block.
+        # Honour our caller's outstanding cancellation before polling again.
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise asyncio.CancelledError
+        if disconnected:
             return
         await asyncio.sleep(_DISCONNECT_POLL_SECONDS)
 
 
 async def _resolve_live_with_disconnect_watch(resolver, request: Request,
-                                              query: str, mode: str, refresh: bool):
+                                              query: str, mode: str, refresh: bool,
+                                              language: str = 'zh-CN'):
     """Cancel a live resolver that would otherwise outlive a disconnected client."""
-    resolve_task = asyncio.create_task(resolver.resolve(query, mode, refresh))
+    resolve_task = asyncio.create_task(resolver.resolve(query, mode, refresh, language))
     disconnect_task = asyncio.create_task(_watch_client_disconnect(request))
     try:
         done, _ = await asyncio.wait(
@@ -42,7 +51,11 @@ async def _resolve_live_with_disconnect_watch(resolver, request: Request,
 
         resolve_task.cancel()
         await asyncio.gather(resolve_task, return_exceptions=True)
-        raise HTTPException(status_code=499, detail='客户端已断开，解析已取消。')
+        raise HTTPException(
+            status_code=499,
+            detail=('The client disconnected; resolution was cancelled.'
+                    if language == 'en' else '客户端已断开，解析已取消。'),
+        )
     finally:
         disconnect_task.cancel()
         resolve_task.cancel()
@@ -52,9 +65,20 @@ async def _resolve_live_with_disconnect_watch(resolver, request: Request,
 @router.post('/explore', response_model=FieldNode)
 async def explore(body: ExploreRequest, request: Request):
     async with admission(body, request):
-        return await request.app.state.explorer.explore(body.query, body.mode, body.refresh,
-                                                         allow_partial=True,
-                                                         research_question=body.research_question)
+        try:
+            return await request.app.state.explorer.explore(
+                body.query, body.mode, body.refresh,
+                allow_partial=True,
+                research_question=body.research_question,
+                language=body.language,
+            )
+        except ProviderError as exc:
+            if body.language == 'en' and any('\u3400' <= char <= '\u9fff' for char in str(exc)):
+                raise ProviderError(
+                    'The provider is temporarily unavailable or returned an invalid result. Please retry.',
+                    exc.status_code,
+                ) from exc
+            raise
 
 
 @router.post('/resolve', response_model=ResolveResult)
@@ -63,14 +87,14 @@ async def resolve(body: ResolveRequest, request: Request):
     # Alias/direct/demo resolution has no external cost.  A cached LLM result
     # also bypasses the live gate; only a cache miss may call the model/search.
     if resolver.requires_live(body.query, body.mode):
-        cached = None if body.refresh else await resolver.cached(body.query, body.mode)
+        cached = None if body.refresh else await resolver.cached(body.query, body.mode, body.language)
         if cached is None:
             async def cache_probe():
-                return await resolver.cached(body.query, body.mode)
+                return await resolver.cached(body.query, body.mode, body.language)
             async with admission(body, request, cache_probe=cache_probe):
                 return await _resolve_live_with_disconnect_watch(
-                    resolver, request, body.query, body.mode, body.refresh)
-    return await resolver.resolve(body.query, body.mode, body.refresh)
+                    resolver, request, body.query, body.mode, body.refresh, body.language)
+    return await resolver.resolve(body.query, body.mode, body.refresh, body.language)
 
 
 @router.post('/explore/stream')
@@ -83,13 +107,18 @@ async def explore_stream(body: ExploreRequest, request: Request):
                 async with admission(body, request):
                     result = await request.app.state.explorer.explore(
                         body.query, body.mode, body.refresh, queue.put, allow_partial=True,
-                        research_question=body.research_question)
+                        research_question=body.research_question, language=body.language)
                 await queue.put({'type': 'complete', 'field': result.model_dump()})
             except ProviderError as exc:
-                await queue.put({'type': 'error', 'detail': str(exc), 'status': exc.status_code})
+                detail = str(exc)
+                if body.language == 'en' and any('\u3400' <= char <= '\u9fff' for char in detail):
+                    detail = 'The provider is temporarily unavailable or returned an invalid result. Please retry.'
+                await queue.put({'type': 'error', 'detail': detail, 'status': exc.status_code})
             except Exception:
                 logging.getLogger(__name__).exception('Exploration stream failed')
-                await queue.put({'type': 'error', 'detail': '分析失败，请重试。', 'status': 500})
+                await queue.put({'type': 'error', 'detail': (
+                    'Analysis failed; please retry.' if body.language == 'en' else '分析失败，请重试。'
+                ), 'status': 500})
 
         task = asyncio.create_task(run())
         try:

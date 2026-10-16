@@ -47,6 +47,32 @@ _DOI_VALUE = re.compile(
     r'10\.48550/arxiv[.:](.+)$',
     re.IGNORECASE,
 )
+_ARXIV_ADMIN_STATUS = re.compile(
+    r'\barxiv\s+admin(?:istrator|istrators)?\s+(?:comment|note)\b'
+    r'.*\b(?:removed|withdrawn|retracted)\b',
+    re.IGNORECASE,
+)
+_REMOVED_BY_ARXIV_STATUS = re.compile(
+    r'\bthis\s+version\s+has\s+been\s+removed\s+by\s+arxiv\s+administrators?\b',
+    re.IGNORECASE,
+)
+_WITHDRAWN_STATUS = re.compile(
+    r'(?:\b(?:this|the)\s+(?:version|submission|paper)\s+'
+    r'(?:has\s+been|was|is)\s+withdrawn\b|\bwithdrawn\s+by\b'
+    r'|\b(?:version|submission|paper)\s*\(\s*withdrawn\s*\))',
+    re.IGNORECASE,
+)
+_RETRACTED_STATUS = re.compile(
+    r'(?:\b(?:this|the)\s+(?:version|submission|paper)\s+'
+    r'(?:has\s+been|was|is)\s+retracted\b|\bretracted\s+by\b'
+    r'|\b(?:version|submission|paper)\s*\(\s*retracted\s*\))',
+    re.IGNORECASE,
+)
+_TITLE_STATUS_MARKER = re.compile(
+    r'(?:^\s*\[(?:withdrawn|retracted)\]\s*|'
+    r'\s*(?:\((?:withdrawn|retracted)\)|\[(?:withdrawn|retracted)\])\s*$)',
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +84,7 @@ class _ArxivRecord:
     year: int | None
     doi: str | None
     metadata_source: str = 'arxiv'
+    status: str | None = None
 
     @property
     def abstract_record_id(self):
@@ -127,6 +154,36 @@ def _text(element: ET.Element | None) -> str:
     return ' '.join(''.join(element.itertext()).split())
 
 
+def _explicit_arxiv_status(title: str, summary: str | None, comment: str) -> str | None:
+    """Extract only explicit withdrawn/retracted markers from Atom metadata.
+
+    Scientific prose may mention withdrawing a method or retracting a claim;
+    those are not record status.  The stronger forms below require an
+    article/version subject, a status marker, or arXiv's administrative label.
+    DataCite records never pass through this parser.
+    """
+    title_text = ' '.join((title or '').split())
+    fields = (comment or '', title_text, summary or '')
+    for value in fields:
+        normalized = ' '.join(value.split())
+        if not normalized:
+            continue
+        if _ARXIV_ADMIN_STATUS.search(normalized) or _REMOVED_BY_ARXIV_STATUS.search(normalized):
+            return 'retracted' if (
+                _RETRACTED_STATUS.search(normalized)
+                or re.search(r'\bretract(?:ed|ion)\b', normalized, re.IGNORECASE)
+            ) else 'withdrawn'
+        if _RETRACTED_STATUS.search(normalized):
+            return 'retracted'
+        if _WITHDRAWN_STATUS.search(normalized):
+            return 'withdrawn'
+    if _TITLE_STATUS_MARKER.search(title_text):
+        return 'retracted' if re.search(r'\bretracted\b', title_text, re.IGNORECASE) else 'withdrawn'
+    if title_text.casefold() in {'withdrawn', 'retracted'}:
+        return 'retracted' if title_text.casefold() == 'retracted' else 'withdrawn'
+    return None
+
+
 def _title_key(value: str | None) -> str:
     return normalize_title(value)
 
@@ -153,6 +210,7 @@ def _parse_entry(entry: ET.Element, arxiv_id: str) -> _ArxivRecord | None:
     if not title:
         return None
     summary = _text(entry.find(f'{{{ATOM_NS}}}summary')) or None
+    comment = _text(entry.find(f'{{{ARXIV_NS}}}comment'))
     authors = [
         name
         for author in entry.findall(f'{{{ATOM_NS}}}author')
@@ -170,6 +228,7 @@ def _parse_entry(entry: ET.Element, arxiv_id: str) -> _ArxivRecord | None:
         authors=authors,
         year=_year(published),
         doi=doi,
+        status=_explicit_arxiv_status(title, summary, comment),
     )
 
 
@@ -198,12 +257,18 @@ def _apply_record(paper: Paper, record: _ArxivRecord) -> Paper:
     canonical_abs = _canonical_abs(record.arxiv_id)
     source_record_ids = _with_aliases(paper, canonical_abs)
     title_conflict = _title_key(paper.title) != _title_key(record.title)
+    is_arxiv_preprint = _is_arxiv_preprint(paper)
+    status_excludes_record = record.status in {'withdrawn', 'retracted'}
+    # DOI registration metadata is not a current arXiv status source.  Keep
+    # its title/authors for identity repair, but do not let an unverified
+    # abstract become semantic evidence for an arXiv preprint.
+    status_unverified = record.metadata_source == 'datacite' and record.status is None
 
     # A linked preprint must never replace a different published work's
     # metadata merely because an index supplied its URL.
     published_doi = normalize_doi(paper.doi)
     if (title_conflict and published_doi and not _from_doi_or_url(paper.doi)
-            and not _is_arxiv_preprint(paper)):
+            and not is_arxiv_preprint):
         return paper
 
     if title_conflict:
@@ -223,13 +288,25 @@ def _apply_record(paper: Paper, record: _ArxivRecord) -> Paper:
             'source_record_ids': source_record_ids,
             'abstract_source_record_id': record.abstract_record_id if record.summary else None,
         }
+        if is_arxiv_preprint and (status_excludes_record or status_unverified):
+            updates.update({
+                'abstract': None,
+                'abstract_source_record_id': None,
+                'citation_count': None,
+                'referenced_works': [],
+            })
+        if status_excludes_record and is_arxiv_preprint:
+            updates['is_retracted'] = True
         return paper.model_copy(update=updates)
 
     updates = {'source_record_ids': source_record_ids}
-    if _is_arxiv_preprint(paper):
+    if is_arxiv_preprint:
         updates.update({
-            'abstract': record.summary,
-            'abstract_source_record_id': record.abstract_record_id if record.summary else None,
+            'abstract': None if status_excludes_record or status_unverified else record.summary,
+            'abstract_source_record_id': (
+                None if status_excludes_record or status_unverified
+                else record.abstract_record_id if record.summary else None
+            ),
             'source': record.metadata_source,
             'url': canonical_abs,
             'work_type': 'preprint',
@@ -242,8 +319,18 @@ def _apply_record(paper: Paper, record: _ArxivRecord) -> Paper:
             updates['year'] = record.year
         if record.doi:
             updates['doi'] = record.doi
+        if status_excludes_record:
+            updates.update({
+                'is_retracted': True,
+                'citation_count': None,
+                'referenced_works': [],
+            })
     elif paper.abstract is None and record.summary:
-        updates.update({'abstract': record.summary, 'abstract_source_record_id': record.abstract_record_id})
+        # A withdrawn/retracted arXiv record is not evidence for the linked
+        # formal publication.  Preserve the publication's own identity and
+        # avoid silently importing the removed preprint abstract into it.
+        if record.metadata_source == 'arxiv' and not status_excludes_record:
+            updates.update({'abstract': record.summary, 'abstract_source_record_id': record.abstract_record_id})
     return paper.model_copy(update=updates)
 
 
@@ -419,6 +506,7 @@ class ArxivMetadataVerifier:
         requested = [arxiv_id for arxiv_id in candidates if arxiv_id not in all_records]
         batch_count = 0
         doi_batch_count = 0
+        datacite_status_warning_ids: set[str] = set()
         for start in range(0, len(requested), MAX_ARXIV_IDS_PER_REQUEST):
             batch = requested[start:start + MAX_ARXIV_IDS_PER_REQUEST]
             delay = 3.0 - (time.monotonic() - self._last_request)
@@ -433,7 +521,11 @@ class ArxivMetadataVerifier:
                 doi_records, doi_warnings = await self._fetch_datacite(client, missing)
                 records.update(doi_records)
                 if doi_records:
-                    batch_warnings = ['arXiv API 路径暂不可用；已使用 arXiv 的 DOI 注册元数据核查。']
+                    datacite_status_warning_ids.update(doi_records)
+                    batch_warnings = [
+                        'arXiv API 路径暂不可用；已使用 arXiv 的 DOI 注册元数据核查，'
+                        '当前撤回状态仍未核查，仅保留题名身份。'
+                    ]
                 batch_warnings.extend(doi_warnings)
             warnings.extend(batch_warnings)
             all_records.update(records)
@@ -447,6 +539,23 @@ class ArxivMetadataVerifier:
         for arxiv_id, record in all_records.items():
             for index in candidates[arxiv_id]:
                 result[index] = _apply_record(result[index], record)
+                if (record.metadata_source == 'datacite' and record.status is None
+                        and arxiv_id not in datacite_status_warning_ids):
+                    warnings.append(
+                        f'arXiv 条目 {arxiv_id} 的 DOI 注册元数据未提供当前撤回状态，'
+                        '仅保留题名身份，摘要未作为证据使用。'
+                    )
+                if record.status in {'withdrawn', 'retracted'}:
+                    if _is_arxiv_preprint(papers[index]):
+                        warnings.append(
+                            f'arXiv 条目 {arxiv_id} 明确标记为 {record.status}，'
+                            '已排除该预印本的摘要和引用证据。'
+                        )
+                    else:
+                        warnings.append(
+                            f'arXiv 条目 {arxiv_id} 明确标记为 {record.status}，'
+                            '仅记录链接状态，未将正式发表版本标记为撤稿。'
+                        )
                 if _title_key(papers[index].title) != _title_key(record.title):
                     if result[index] is papers[index]:
                         unresolved_ids.append(papers[index].id)
@@ -464,7 +573,14 @@ class ArxivMetadataVerifier:
                                                  for source in ('arxiv', 'datacite')},
                             'checked_ids': list(all_records), 'corrected_work_ids': corrected_ids,
                             'unresolved_work_ids': unresolved_ids,
-                            'missing_ids': [value for value in candidates if value not in all_records]}
+                            'missing_ids': [value for value in candidates if value not in all_records],
+                            # None means the current arXiv status was not
+                            # explicitly present in the trusted response;
+                            # DataCite registration state is not substituted.
+                            'status_by_id': {
+                                value: all_records[value].status if value in all_records else None
+                                for value in candidates
+                            }}
         # When the identifier could not be verified, its index abstract must
         # not become confident semantic evidence for a possibly different work.
         for arxiv_id in self.last_report['missing_ids']:

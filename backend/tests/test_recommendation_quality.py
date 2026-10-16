@@ -8,9 +8,27 @@ from app.models.schemas import Decomposition
 from app.db.cache import FieldCache
 from app.services.field_explorer import FieldExplorer
 from app.services.field_decomposer import FieldDecomposer
+from app.services.evidence_verifier import TITLE_ONLY_CORE_SCORE_CAP
 from app.providers.base import ProviderError
-from app.services.literature_retriever import LiteratureRetriever, merge_lanes, expand_formula_tokens, diversify_foundations
+from app.services.literature_retriever import (
+    LiteratureRetriever,
+    merge_lanes,
+    expand_formula_tokens,
+    diversify_foundations,
+    diversify_evidence_lanes,
+    _build_validation_need_query,
+)
 from app.services.paper_ranker import PaperRanker
+
+
+def _source_scope_response(kwargs):
+    if 'source-scope classifier' not in kwargs.get('system', ''):
+        return None
+    return {'papers': [
+        {'paper_id': paper['id'], 'scope_relation': 'direct',
+         'reason': 'The paper matches the requested study object.'}
+        for paper in kwargs['payload']['papers']
+    ]}
 
 
 def judgment(paper_id, relevance=.9, importance=.8, role='primary'):
@@ -24,6 +42,113 @@ def test_famous_adjacent_paper_cannot_displace_scope_evidence():
     assessments = [judgment('direct', .9, .8), judgment('adjacent', .4, 1)]
     ranked = PaperRanker(Settings(_env_file=None).rank_weights).rank('prime editing efficiency', papers, assessments)
     assert [core.paper.id for core in ranked] == ['direct']
+
+
+def test_title_only_relevance_cannot_displace_abstract_backed_core_candidate():
+    title_papers = [
+        Paper(id=f'title-{index}', title=f'Quantum transport title {index}')
+        for index in range(8)
+    ]
+    title_judgments = [
+        PaperJudgment(
+            paper_id=paper.id,
+            relevance=1.0,
+            importance=.55,  # The production validator already caps this.
+            reason='标题线索，尚未核验摘要。',
+            role='unknown',
+            evidence_basis='title',
+            evidence_quote=paper.title,
+        )
+        for paper in title_papers
+    ]
+    abstract_paper = Paper(
+        id='abstract-backed',
+        title='Quantum transport direct measurement',
+        abstract='This study directly measures quantum transport in a controlled device.',
+    )
+    abstract_judgment = PaperJudgment(
+        paper_id=abstract_paper.id,
+        relevance=.8,
+        importance=.9,
+        reason='摘要支持直接测量贡献。',
+        role='primary',
+        evidence_basis='abstract',
+        evidence_quote=abstract_paper.abstract,
+    )
+
+    ranked = PaperRanker(Settings(_env_file=None).rank_weights).rank(
+        'Quantum transport',
+        [*title_papers, abstract_paper],
+        [*title_judgments, abstract_judgment],
+        limit=8,
+        analysis_source='llm',
+    )
+
+    ranked_ids = [core.paper.id for core in ranked]
+    assert len(ranked) == 8
+    assert ranked_ids[0] == 'abstract-backed'
+    assert 'abstract-backed' in ranked_ids
+    title_ranked = [core for core in ranked if core.evidence_basis == 'title']
+    assert title_ranked
+    assert all(core.signals['relevance'] == 1.0 for core in title_ranked)
+    assert all(core.score <= TITLE_ONLY_CORE_SCORE_CAP for core in title_ranked)
+
+
+def test_title_only_relevance_cap_does_not_change_mock_sorting():
+    title_paper = Paper(id='title-only', title='Quantum transport title')
+    abstract_paper = Paper(
+        id='abstract-backed',
+        title='Quantum transport experiment',
+        abstract='This study directly measures quantum transport.',
+    )
+    judgments = [
+        PaperJudgment(
+            paper_id='title-only', relevance=1.0, importance=.9,
+            reason='演示标题线索', role='unknown', evidence_basis='title',
+            evidence_quote=title_paper.title,
+        ),
+        PaperJudgment(
+            paper_id='abstract-backed', relevance=.8, importance=.9,
+            reason='演示摘要线索', role='primary', evidence_basis='abstract',
+            evidence_quote=abstract_paper.abstract,
+        ),
+    ]
+
+    ranked = PaperRanker(Settings(_env_file=None).rank_weights).rank(
+        'Quantum transport', [title_paper, abstract_paper], judgments,
+        limit=2, analysis_source='mock',
+    )
+
+    assert ranked[0].paper.id == 'title-only'
+    assert ranked[0].signals['relevance'] == 1.0
+    assert ranked[0].score > ranked[1].score
+
+
+def test_title_only_score_cap_keeps_uncapped_score_as_tie_break():
+    papers = [
+        Paper(id='z-high', title='Quantum transport high-priority title'),
+        Paper(id='a-low', title='Quantum transport lower-priority title'),
+    ]
+    judgments = [
+        PaperJudgment(
+            paper_id='z-high', relevance=1.0, importance=1.0,
+            reason='标题主题高度相关。', role='primary', evidence_basis='title',
+            evidence_quote=papers[0].title,
+        ),
+        PaperJudgment(
+            paper_id='a-low', relevance=1.0, importance=.8,
+            reason='标题主题相关。', role='primary', evidence_basis='title',
+            evidence_quote=papers[1].title,
+        ),
+    ]
+
+    ranked = PaperRanker(Settings(_env_file=None).rank_weights).rank(
+        'Quantum transport', papers, judgments, limit=2, analysis_source='llm',
+    )
+
+    assert [core.paper.id for core in ranked] == ['z-high', 'a-low']
+    assert [core.score for core in ranked] == [TITLE_ONLY_CORE_SCORE_CAP] * 2
+    assert all(core.signals['relevance'] == 1.0 for core in ranked)
 
 
 def test_unverified_excerpt_cannot_keep_a_fabricated_semantic_relevance_boost():
@@ -40,7 +165,7 @@ def test_formula_spacing_expansion_is_generic_and_respects_exact_quotes():
     assert expand_formula_tokens('"MoS2" optical transport') == '"MoS2" optical transport'
 
 
-def test_mechanism_lane_adds_distinct_terms_without_extra_search_calls():
+def test_mechanism_lane_keeps_a_separate_bounded_search():
     class LLM:
         async def generate_structured(self, **kwargs):
             return {'anchor': 'Research object', 'alternative': 'Research object outcome',
@@ -53,8 +178,9 @@ def test_mechanism_lane_adds_distinct_terms_without_extra_search_calls():
             return [Paper(id=f'W{len(self.calls)}', title=query)]
     papers = Papers()
     result = asyncio.run(LiteratureRetriever(Settings(_env_file=None), papers, LLM()).retrieve('Research object outcome', 40))
-    assert len(papers.calls) == 3
-    assert any('"mechanism A" OR "method variant B"' in query for query in result.queries)
+    assert len(papers.calls) == 3  # The synonym query duplicates the untouched original.
+    assert any('mechanism A OR method variant B' in query for query in result.queries)
+    assert all('"mechanism A"' not in query for query in result.queries)
 
 
 def test_legacy_chinese_branch_can_retrieve_english_metadata():
@@ -86,10 +212,389 @@ def test_mechanism_recall_does_not_require_umbrella_outcome_or_discard_synonyms(
     papers = Papers()
     asyncio.run(LiteratureRetriever(Settings(_env_file=None), papers, LLM()).retrieve(
         'Research material device stability', 40))
-    assert len(papers.calls) == 3
+    assert len(papers.calls) == 4
     assert 'degradation OR phase segregation' in papers.calls[2]
-    assert '(Research material) AND ("ion migration" OR "thermal stress")' in papers.calls[2]
-    assert 'device stability' not in papers.calls[2]
+    assert '(Research material) AND (ion migration OR thermal stress)' in papers.calls[3]
+    assert all('device stability' not in query for query in papers.calls[2:])
+
+
+def test_evidence_needs_use_separate_plain_queries_and_paper_keyed_provenance():
+    class LLM:
+        async def generate_structured(self, **kwargs):
+            return {
+                'anchor': 'Research object',
+                'alternative': 'Research object complementary terminology',
+                'evidence_needs': [
+                    {'label': 'systematic error source', 'focused_query': 'Research object confound source'},
+                    {'label': 'reference platform difference', 'focused_query': 'Research object platform mismatch'},
+                    {'label': 'posterior validation check', 'focused_query': 'Research object posterior coverage'},
+                ],
+                # Legacy facets must not create a seventh lane when needs exist.
+                'facets': ['legacy method', 'legacy comparison'],
+            }
+
+    class Papers:
+        def __init__(self):
+            self.calls = []
+
+        async def search_papers(self, query, limit=40, **kwargs):
+            self.calls.append((query, kwargs.get('search_scope')))
+            return [Paper(id=f'W{len(self.calls)}', title=query)]
+
+    papers = Papers()
+    result = asyncio.run(LiteratureRetriever(Settings(_env_file=None), papers, LLM()).retrieve(
+        'Research object outcome', 40))
+    assert len(papers.calls) == 6
+    assert [need['id'] for need in result.evidence_needs] == ['need-1', 'need-2', 'need-3']
+    focused = [need['focused_query'] for need in result.evidence_needs]
+    assert all(3 <= len(query.split()) <= 8 for query in focused)
+    assert all('"' not in query and not any(op in query.split() for op in ('AND', 'OR', 'NOT'))
+               for query in focused)
+    assert all(need_id in set(sum(result.candidate_focus_ids.values(), []))
+               for need_id in ('need-1', 'need-2', 'need-3'))
+
+
+def test_oversized_optional_alternative_does_not_discard_valid_evidence_needs():
+    class LLM:
+        async def generate_structured(self, **kwargs):
+            return {
+                'anchor': 'Research object',
+                'alternative': 'Research object ' + ('long optional term ' * 20),
+                'evidence_needs': [
+                    {'label': 'systematic error source', 'focused_query': 'Research object confound source'},
+                    {'label': 'reference platform difference', 'focused_query': 'Research object platform mismatch'},
+                    {'label': 'posterior validation check', 'focused_query': 'Research object posterior coverage'},
+                ],
+            }
+
+    class Papers:
+        def __init__(self):
+            self.calls = []
+
+        async def search_papers(self, query, limit=40, **kwargs):
+            self.calls.append((query, kwargs.get('search_scope')))
+            return [Paper(id=f'W{len(self.calls)}', title=query)]
+
+    papers = Papers()
+    result = asyncio.run(LiteratureRetriever(Settings(_env_file=None), papers, LLM()).retrieve(
+        'Research object outcome', 40))
+    assert len(papers.calls) == 5  # original + foundation + three focused needs
+    assert len(result.queries) == 5
+    assert [need['id'] for need in result.evidence_needs] == ['need-1', 'need-2', 'need-3']
+    assert all(len(query) <= 180 for query, _ in papers.calls)
+
+
+def test_unknown_search_plan_fields_still_trigger_safe_foundation_fallback():
+    class LLM:
+        async def generate_structured(self, **kwargs):
+            return {'anchor': 'Research object', 'alternative': '', 'unexpected': 'reject me'}
+
+    class Papers:
+        def __init__(self):
+            self.calls = []
+
+        async def search_papers(self, query, limit=40, **kwargs):
+            self.calls.append((query, kwargs.get('sort'), kwargs.get('search_scope')))
+            return [Paper(id=f'W{len(self.calls)}', title=query)]
+
+    papers = Papers()
+    result = asyncio.run(LiteratureRetriever(Settings(_env_file=None), papers, LLM()).retrieve(
+        'Research object outcome', 40))
+    assert len(papers.calls) == 2
+    assert papers.calls[1] == ('Research object outcome', 'cited_by_count:desc', 'title_abstract')
+    assert result.evidence_needs == []
+
+
+def test_validation_axis_reserves_an_independent_need_and_keeps_direct_lane():
+    class LLM:
+        async def generate_structured(self, **kwargs):
+            return {
+                'anchor': 'inverse inference',
+                'object_query': 'inverse',
+                'alternative': 'inverse reconstruction',
+                'validation_axes': ['calibration'],
+                'evidence_needs': [
+                    {'label': 'systematic error source', 'focused_query': 'inverse inference confound source'},
+                    {'label': 'platform comparison', 'focused_query': 'inverse inference platform mismatch'},
+                    {'label': 'generic method', 'focused_query': 'inverse inference method variant'},
+                ],
+            }
+
+    class Papers:
+        def __init__(self):
+            self.calls = []
+
+        async def search_papers(self, query, limit=40, **kwargs):
+            self.calls.append((query, kwargs.get('search_scope')))
+            if query == 'inverse calibration inference':
+                return [Paper(id='calibration-paper', title='Inverse inference calibration study',
+                              abstract='Validates posterior calibration on held-out observations.')]
+            return [Paper(id=f'W{len(self.calls)}', title=query)]
+
+    papers = Papers()
+    result = asyncio.run(LiteratureRetriever(Settings(_env_file=None), papers, LLM()).retrieve(
+        'inverse inference outcome', 40))
+    assert len(papers.calls) == 6  # original + foundation + validation + two needs + alternative
+    assert 'inverse calibration inference' in [query for query, _ in papers.calls]
+    assert result.evidence_needs[0] == {
+        'id': 'need-1', 'label': 'calibration validation',
+        'focused_query': 'inverse calibration inference',
+    }
+    assert len(result.evidence_needs) == 3
+    assert 'generic method' not in [need['label'] for need in result.evidence_needs]
+    assert result.candidate_focus_ids['calibration-paper'] == ['need-1']
+
+
+def test_valid_planner_validation_query_is_used_for_the_independent_lane():
+    class LLM:
+        async def generate_structured(self, **kwargs):
+            return {
+                'anchor': 'diffusion models inverse problems',
+                'object_query': 'diffusion models inverse problems',
+                'alternative': '',
+                'validation_axes': ['calibration'],
+                'validation_query': 'diffusion imaging calibration',
+            }
+
+    class Papers:
+        def __init__(self):
+            self.calls = []
+
+        async def search_papers(self, query, limit=40, **kwargs):
+            self.calls.append(query)
+            if query == 'diffusion imaging calibration':
+                return [Paper(id='application-calibration', title='Diffusion imaging calibration',
+                              abstract='Calibrates uncertainty for noisy image reconstruction.')]
+            return [Paper(id=f'W{len(self.calls)}', title=query)]
+
+    papers = Papers()
+    result = asyncio.run(LiteratureRetriever(Settings(_env_file=None), papers, LLM()).retrieve(
+        'diffusion models inverse problems outcome', 40))
+    assert papers.calls == [
+        'diffusion models inverse problems outcome',
+        'diffusion models inverse problems',
+        'diffusion imaging calibration',
+    ]
+    assert result.evidence_needs[0]['focused_query'] == 'diffusion imaging calibration'
+    assert result.candidate_focus_ids['application-calibration'] == ['need-1']
+
+
+def test_invalid_planner_validation_query_uses_bounded_generic_fallback():
+    class LLM:
+        async def generate_structured(self, **kwargs):
+            return {
+                'anchor': 'diffusion models inverse problems',
+                'object_query': 'diffusion models inverse problems',
+                'alternative': '',
+                'validation_axes': ['calibration'],
+                'validation_query': 'diffusion imaging OR calibration',
+            }
+
+    class Papers:
+        def __init__(self):
+            self.calls = []
+
+        async def search_papers(self, query, limit=40, **kwargs):
+            self.calls.append(query)
+            return [Paper(id=f'W{len(self.calls)}', title=query)]
+
+    papers = Papers()
+    result = asyncio.run(LiteratureRetriever(Settings(_env_file=None), papers, LLM()).retrieve(
+        'diffusion models inverse problems outcome', 40))
+    assert 'diffusion imaging OR calibration' not in papers.calls
+    assert 'diffusion models inverse problems calibration' in papers.calls
+    assert result.evidence_needs[0]['focused_query'] == 'diffusion models inverse problems calibration'
+
+
+def test_posterior_request_protects_reference_comparison_and_calibration_when_axes_are_omitted():
+    class LLM:
+        async def generate_structured(self, **kwargs):
+            return {
+                'anchor': 'posterior inference',
+                'object_query': 'posterior inference',
+                'alternative': '',
+                'evidence_needs': [
+                    {'label': 'posterior method', 'focused_query': 'posterior inference sampling method'},
+                    {'label': 'consistency check', 'focused_query': 'posterior inference consistency check'},
+                ],
+            }
+
+    class Papers:
+        def __init__(self):
+            self.calls = []
+
+        async def search_papers(self, query, limit=40, **kwargs):
+            self.calls.append(query)
+            if query == 'posterior inference calibration':
+                return [Paper(id='posterior-calibration', title='Posterior inference calibration',
+                              abstract='Reports calibration of posterior uncertainty.')]
+            if query == 'posterior inference evaluation':
+                return [Paper(id='posterior-evaluation', title='Posterior inference evaluation',
+                              abstract='Compares approximate samples with a known reference posterior.')]
+            return [Paper(id=f'W{len(self.calls)}', title=query)]
+
+    papers = Papers()
+    result = asyncio.run(LiteratureRetriever(Settings(_env_file=None), papers, LLM()).retrieve(
+        'posterior inference problem', 40))
+    assert 'posterior inference calibration' in papers.calls
+    assert [need['label'] for need in result.evidence_needs[:2]] == [
+        'reference posterior validation', 'calibration validation',
+    ]
+    assert result.candidate_focus_ids['posterior-evaluation'] == ['need-1']
+    assert result.candidate_focus_ids['posterior-calibration'] == ['need-2']
+    assert len(result.evidence_needs) <= 3 and len(papers.calls) <= 6
+    assert len(result.papers) <= 40
+
+
+def test_validation_query_keeps_late_strong_object_qualifier():
+    query = _build_validation_need_query(
+        'calibration',
+        anchor_query='diffusion models inverse problems',
+        object_query='diffusion models inverse problems',
+        context_queries=(
+            'diffusion models noisy linear inverse problems posterior approximation '
+            'data consistency hallucination trade-off',
+            'noisy linear inverse problem posterior sampling diffusion',
+        ),
+    )
+    assert query == 'diffusion models inverse problems calibration posterior'
+    assert len(query.split()) <= 8
+
+
+def test_validation_query_keeps_a_short_multiword_object_intact():
+    query = _build_validation_need_query(
+        'calibration',
+        anchor_query='tidal deformability neutron star',
+        object_query='tidal deformability neutron star',
+    )
+    assert query == 'tidal deformability neutron star calibration'
+
+
+def test_focused_lane_gets_a_slot_after_early_duplicates_are_squeezed_out():
+    shared = [Paper(id=f'shared-{index}', title=f'Research object shared paper {index}')
+              for index in range(10)]
+    original = shared + [Paper(id=f'original-{index}', title=f'Research object original paper {index}')
+                         for index in range(30)]
+    other = [Paper(id=f'other-{index}', title=f'Research object other paper {index}')
+             for index in range(40)]
+    focused = shared + [Paper(id='focused-unique', title='Research object focused limitation')]
+    selected = merge_lanes([original, other, focused], 8, protected_lane_indices={2})
+    assert 'focused-unique' in {paper.id for paper in selected}
+
+
+def test_late_distinctive_evidence_hits_enter_small_fair_budget_without_new_requests():
+    needs = [
+        {'id': 'need-1', 'label': 'measurement limitation',
+         'focused_query': 'diffusion measurement noise limitation'},
+        {'id': 'need-2', 'label': 'posterior calibration',
+         'focused_query': 'diffusion posterior calibration coverage'},
+    ]
+    original = [Paper(id=f'original-{index}', title=f'Diffusion models study {index}',
+                      abstract='A generic method result.') for index in range(40)]
+    original[13] = Paper(id='measurement-late', title='Diffusion models measurement study',
+                         abstract='Measures noise and limitation effects in reconstruction.')
+    foundation = [Paper(id=f'foundation-{index}', title=f'Diffusion models foundation {index}',
+                        abstract='A foundational method result.') for index in range(40)]
+    alternative = [Paper(id=f'alternative-{index}', title=f'Diffusion models alternative {index}',
+                         abstract='A generic reconstruction result.') for index in range(40)]
+    alternative[28] = Paper(id='posterior-late', title='Diffusion models posterior study',
+                            abstract='Evaluates posterior calibration and coverage.')
+    specs = [
+        ('diffusion inverse problem', None, 'all'),
+        ('diffusion models', 'cited_by_count:desc', 'title_abstract'),
+        ('diffusion reconstruction', None, 'title_abstract'),
+    ]
+    reordered, promoted = diversify_evidence_lanes(
+        [original, foundation, alternative], specs, needs,
+        anchor_query='diffusion models', object_query='diffusion',
+    )
+    assert [paper.id for paper in reordered[0][:2]] == ['original-0', 'original-1']
+    assert reordered[0][2].id == 'measurement-late'
+    assert [paper.id for paper in reordered[1][:8]] == [f'foundation-{i}' for i in range(8)]
+    assert reordered[2][2].id == 'posterior-late'
+    assert promoted['need-1'][0].id == 'measurement-late'
+    assert promoted['need-2'][0].id == 'posterior-late'
+
+    selected = merge_lanes(reordered, 9)
+    assert {'measurement-late', 'posterior-late'} <= {paper.id for paper in selected}
+    unchanged, no_focus = diversify_evidence_lanes(
+        [original], [specs[0]], [], anchor_query='diffusion models', object_query='diffusion'
+    )
+    assert [paper.id for paper in unchanged[0]] == [paper.id for paper in original]
+    assert no_focus == {}
+
+
+def test_zero_hit_evidence_lane_gets_at_most_two_short_fallback_requests():
+    class LLM:
+        async def generate_structured(self, **kwargs):
+            return {
+                'anchor': 'diffusion models',
+                'alternative': 'diffusion reconstruction',
+                'object_query': 'diffusion',
+                'evidence_needs': [{
+                    'label': 'posterior calibration validation',
+                    'focused_query': 'diffusion inverse problem posterior calibration measurement noise',
+                }],
+            }
+
+    class Papers:
+        def __init__(self):
+            self.calls = []
+
+        async def search_papers(self, query, limit=40, **kwargs):
+            self.calls.append(query)
+            if ('calibration' in query and query !=
+                    'diffusion inverse problem posterior calibration measurement noise'):
+                return [Paper(id='fallback-uq', title='Diffusion posterior calibration',
+                              abstract='Posterior calibration and validation under measurement noise.')]
+            if query == 'diffusion inverse problem posterior calibration measurement noise':
+                return []
+            return [Paper(id=f'generic-{len(self.calls)}', title=f'Diffusion generic study {len(self.calls)}',
+                          abstract='A generic diffusion method result.')]
+
+    papers = Papers()
+    result = asyncio.run(LiteratureRetriever(Settings(_env_file=None), papers, LLM()).retrieve(
+        'diffusion inverse problem', 40))
+    assert len(papers.calls) == 5
+    assert len(result.queries) == 5
+    fallback_query = result.queries[-1]
+    assert fallback_query.split()[:1] == ['diffusion']
+    assert 2 <= len(fallback_query.split()) <= 5
+    assert 'measurement' not in fallback_query
+    assert 'fallback-uq' in {paper.id for paper in result.papers}
+    assert result.candidate_focus_ids['fallback-uq'] == ['need-1']
+
+
+def test_provider_error_in_evidence_lane_is_not_retried_by_zero_hit_fallback():
+    class LLM:
+        async def generate_structured(self, **kwargs):
+            return {
+                'anchor': 'diffusion models',
+                'alternative': 'diffusion reconstruction',
+                'object_query': 'diffusion',
+                'evidence_needs': [{
+                    'label': 'posterior calibration validation',
+                    'focused_query': 'diffusion inverse problem posterior calibration measurement noise',
+                }],
+            }
+
+    class Papers:
+        def __init__(self):
+            self.calls = []
+
+        async def search_papers(self, query, limit=40, **kwargs):
+            self.calls.append(query)
+            if query == 'diffusion inverse problem posterior calibration measurement noise':
+                raise ProviderError('focused provider unavailable', 503)
+            return [Paper(id=f'generic-{len(self.calls)}', title=f'Diffusion generic study {len(self.calls)}',
+                          abstract='A generic diffusion method result.')]
+
+    papers = Papers()
+    result = asyncio.run(LiteratureRetriever(Settings(_env_file=None), papers, LLM()).retrieve(
+        'diffusion inverse problem', 40))
+    assert len(papers.calls) == 4
+    assert len(result.queries) == 4
+    assert all('calibration' not in query for query in result.queries[4:])
 
 
 def test_scientific_subscript_versions_share_identity_with_author_and_year_evidence():
@@ -106,16 +611,28 @@ def test_scientific_subscript_versions_share_identity_with_author_and_year_evide
 def test_extra_valid_citation_is_cleaned_without_losing_the_whole_map():
     class LLM:
         async def generate_structured(self, **kwargs):
+            scoped = _source_scope_response(kwargs)
+            if scoped is not None:
+                return scoped
+            if set(kwargs['schema']['properties']) == {'summary'}:
+                assert kwargs['payload']['audited_relations'][0]['status'] == 'supported'
+                return {'summary': '摘要支持这个具体方向。'}
             if 'audits' in kwargs['schema']['properties']:
                 ids = kwargs['payload']['relations'][0]['evidence_paper_ids']
                 assert len(ids) == 3 and 'W4' in ids and 'not-a-candidate' not in ids
                 return {'audits': [{'relation_id': 'r1', 'verdict': 'supported',
-                                    'reason': '摘要支持这个具体方向。'}]}
+                                    'reason': '摘要支持这个具体方向。',
+                                    'corrected_name': 'Specific mechanism',
+                                    'supported_quote_ids': ['r1:q1', 'r1:q2', 'r1:q3'],
+                                    'scope_relation': 'direct'}]}
             return {'summary': 'A useful map', 'prerequisites': [], 'subfields': [{
                 'name': 'Specific mechanism', 'reason': 'A supported research direction.', 'confidence': .8,
                 'evidence_paper_ids': ['p1', 'p2', 'p3', 'p4', 'not-a-candidate'],
-                'evidence_quotes': [{'paper_id': 'p4', 'source': 'abstract',
-                                     'quote': 'measures the specific mechanism directly'}],
+                'evidence_quotes': [
+                    {'paper_id': alias, 'source': 'abstract',
+                     'quote': 'measures the specific mechanism directly'}
+                    for alias in ['p2', 'p3', 'p4']
+                ],
             }]}
     papers = [Paper(id=f'W{i}', title=f'Mechanism paper {i}',
                     abstract='This study measures the specific mechanism directly.') for i in range(1, 5)]
@@ -124,6 +641,57 @@ def test_extra_valid_citation_is_cleaned_without_losing_the_whole_map():
     assert len(result.subfields) == 1
     assert len(result.subfields[0].evidence_paper_ids) == 3
     assert result.subfields[0].evidence_status == 'supported'
+
+
+def test_paper_phase_discards_known_map_superset_without_contaminating_judgments():
+    paper = Paper(
+        id='W1', title='A direct measurement',
+        abstract='This study directly measures the requested mechanism.',
+    )
+
+    class SupersetLLM:
+        async def generate_structured(self, **kwargs):
+            assert set(kwargs['schema']['properties']) == {'paper_judgments'}
+            return {
+                'paper_judgments': [{
+                    'paper_id': 'p1', 'importance': .8, 'relevance': .9,
+                    'reason': 'Directly evaluates the supplied candidate.',
+                    'role': 'primary', 'evidence_basis': 'abstract',
+                    'evidence_quote': 'This study directly measures the requested mechanism.',
+                }],
+                # Known fields from the map phase are a provider superset and
+                # must never enter the papers result or later cache.
+                'summary': 'Injected map summary',
+                'prerequisites': [{
+                    'name': 'Injected prerequisite', 'reason': 'Injected',
+                    'confidence': 1, 'evidence_paper_ids': ['p1'],
+                }],
+                'subfields': [{
+                    'name': 'Injected subfield', 'reason': 'Injected',
+                    'confidence': 1, 'evidence_paper_ids': ['p1'],
+                }],
+                'warnings': ['Injected warning'],
+                'evidence_audit_complete': True,
+            }
+
+    judgments = asyncio.run(FieldDecomposer(SupersetLLM()).judge_papers(
+        'A topic', [paper]))
+    assert [judgment.paper_id for judgment in judgments] == ['W1']
+    assert judgments[0].reason == 'Directly evaluates the supplied candidate.'
+
+
+@pytest.mark.parametrize('raw', [
+    {'summary': 'Missing paper judgments', 'prerequisites': [], 'subfields': []},
+    {'paper_judgments': [], 'unexpected': 'must fail closed'},
+])
+def test_paper_phase_rejects_missing_requested_field_or_unknown_extra(raw):
+    class InvalidPhaseLLM:
+        async def generate_structured(self, **kwargs):
+            return raw
+
+    with pytest.raises(ProviderError, match='schema'):
+        asyncio.run(FieldDecomposer(InvalidPhaseLLM()).judge_papers(
+            'A topic', [Paper(id='W1', title='Candidate')]))
 
 
 def test_small_map_list_overflow_is_trimmed_before_bounded_audit():
@@ -174,6 +742,12 @@ def test_small_map_list_overflow_is_trimmed_before_bounded_audit():
 
         async def generate_structured(self, **kwargs):
             self.calls.append(kwargs)
+            scoped = _source_scope_response(kwargs)
+            if scoped is not None:
+                return scoped
+            if set(kwargs['schema']['properties']) == {'summary'}:
+                assert len(kwargs['payload']['audited_relations']) == 12
+                return {'summary': 'A bounded map of the displayed research directions.'}
             if 'independent evidence auditor' in kwargs['system']:
                 relations = kwargs['payload']['relations']
                 assert len(relations) == 12
@@ -183,6 +757,19 @@ def test_small_map_list_overflow_is_trimmed_before_bounded_audit():
                         'relation_id': item['relation_id'],
                         'verdict': 'supported',
                         'reason': '摘要支持该具体方向。',
+                        'corrected_name': (
+                            'Shared foundation'
+                            if item['evidence_paper_ids'][0] in {'W1', 'W7'}
+                            else (
+                                f"Prerequisite {int(item['evidence_paper_ids'][0][1:]) - 1}"
+                                if int(item['evidence_paper_ids'][0][1:]) <= 6
+                                else f"Subfield {int(item['evidence_paper_ids'][0][1:]) - 6}"
+                            )
+                        ),
+                        'supported_quote_ids': [
+                            quote['quote_id'] for quote in item['evidence_quotes']
+                        ],
+                        'scope_relation': 'direct',
                     }
                     for item in relations
                 ]}
@@ -215,17 +802,25 @@ def test_small_map_list_overflow_is_trimmed_before_bounded_audit():
     assert all(relation.evidence_status == 'supported' for relation in [
         *result.prerequisites, *result.subfields,
     ])
-    assert len(llm.calls) == 2
+    assert len(llm.calls) == 4
 
 
 def test_small_quote_overflow_keeps_only_valid_bounded_citations_before_audit():
     class LLM:
         async def generate_structured(self, **kwargs):
+            scoped = _source_scope_response(kwargs)
+            if scoped is not None:
+                return scoped
+            if set(kwargs['schema']['properties']) == {'summary'}:
+                return {'summary': '摘要支持该研究方向。'}
             if 'audits' in kwargs['schema']['properties']:
                 relation = kwargs['payload']['relations'][0]
                 assert relation['evidence_paper_ids'] == ['W2', 'W3', 'W4']
                 return {'audits': [{'relation_id': 'r1', 'verdict': 'supported',
-                                    'reason': '摘要支持该研究方向。'}]}
+                                    'reason': '摘要支持该研究方向。',
+                                    'corrected_name': 'Specific mechanism',
+                                    'supported_quote_ids': ['r1:q1', 'r1:q2', 'r1:q3'],
+                                    'scope_relation': 'direct'}]}
             return {'summary': 'A useful map', 'prerequisites': [], 'subfields': [{
                 'name': 'Specific mechanism', 'reason': 'A supported direction.', 'confidence': .8,
                 'evidence_paper_ids': ['p1', 'p2', 'p3', 'p4'],
@@ -250,9 +845,17 @@ def test_long_relation_excerpt_is_a_bounded_exact_prefix_before_audit():
 
     class LLM:
         async def generate_structured(self, **kwargs):
+            scoped = _source_scope_response(kwargs)
+            if scoped is not None:
+                return scoped
+            if set(kwargs['schema']['properties']) == {'summary'}:
+                return {'summary': '摘要支持该研究方向。'}
             if 'audits' in kwargs['schema']['properties']:
                 return {'audits': [{'relation_id': 'r1', 'verdict': 'supported',
-                                    'reason': '摘要支持该研究方向。'}]}
+                                    'reason': '摘要支持该研究方向。',
+                                    'corrected_name': 'Specific mechanism',
+                                    'supported_quote_ids': ['r1:q1'],
+                                    'scope_relation': 'direct'}]}
             return {'summary': 'A useful map', 'prerequisites': [], 'subfields': [{
                 'name': 'Specific mechanism', 'reason': 'A supported direction.', 'confidence': .8,
                 'evidence_paper_ids': ['p1'],
@@ -271,6 +874,9 @@ def test_long_relation_excerpt_is_a_bounded_exact_prefix_before_audit():
 def test_decomposer_preserves_independent_abstract_provenance_without_changing_citation_id():
     class LLM:
         async def generate_structured(self, **kwargs):
+            if set(kwargs['schema']['properties']) == {'summary'}:
+                assert kwargs['payload']['audited_relations'] == []
+                return {'summary': 'No branch evidence has been displayed in this map.'}
             paper = kwargs['payload']['papers'][0]
             assert paper['id'] == 'p1'
             assert paper['source'] == 'datacite'
@@ -288,7 +894,14 @@ def test_incomplete_semantic_audit_remains_retryable():
     from app.services.evidence_verifier import EvidenceVerifier, SentPaper
     class LLM:
         async def generate_structured(self, **kwargs):
-            return {'audits': [{'relation_id': 'r1', 'verdict': 'supported', 'reason': 'Supports the first relation.'}]}
+            scoped = _source_scope_response(kwargs)
+            if scoped is not None:
+                return scoped
+            return {'audits': [{'relation_id': 'r1', 'verdict': 'supported',
+                                'reason': 'Supports the first relation.',
+                                'corrected_name': 'First relation',
+                                'supported_quote_ids': ['r1:q1'],
+                                'scope_relation': 'direct'}]}
     relations = [FieldRelation(name=f'Direction {i}', reason='A specific direction.', confidence=.8,
                     evidence_paper_ids=['W1'], evidence_quotes=[EvidenceQuote(paper_id='W1', source='abstract',
                     quote='measures two distinct research mechanisms')]) for i in range(2)]
@@ -303,6 +916,8 @@ def test_overlong_core_display_fields_are_bounded_and_excerpt_still_verified():
     excerpt = 'We directly measure quantum transport and observe a specific response. ' * 6
     class LLM:
         async def generate_structured(self, **kwargs):
+            if kwargs['schema'].get('title') == 'CoreReasonAuditBatch':
+                return {'audits': [{'paper_id': 'W1', 'reason': '摘要支持这一具体研究贡献。' * 30}]}
             return {'audits': [{'paper_id': 'W1', 'verdict': 'direct', 'role': 'primary',
                 'reason': '摘要支持这一具体研究贡献。' * 30, 'evidence_quote': excerpt}]}
     paper = Paper(id='W1', title='Quantum transport measurement', abstract=excerpt)
@@ -362,15 +977,15 @@ def test_merged_model_budget_remains_forty_with_balanced_recall_lanes():
     assert Counter(p.id[0] for p in selected) == {'a': 14, 'b': 13, 'c': 13}
 
 
-def test_balanced_lanes_keep_heads_and_deterministic_late_rank_samples():
+def test_balanced_lanes_do_not_replace_fair_head_allocations_with_blind_tail_samples():
     lanes = [[Paper(id=f'{lane}-{i}', title=f'Distinct topic {lane} paper {i}') for i in range(40)]
              for lane in ('original', 'foundation', 'facet')]
     selected = merge_lanes(lanes, 40)
     selected_ids = {paper.id for paper in selected}
     assert len(selected) == 40
     assert {'original-0', 'foundation-0', 'facet-0'} <= selected_ids
-    assert {'original-35', 'original-37', 'foundation-35', 'foundation-37',
-            'facet-35', 'facet-37'} <= selected_ids
+    assert {f'{lane}-{i}' for lane in ('original', 'foundation', 'facet') for i in range(13)} <= selected_ids
+    assert not any(paper.id.endswith(('-35', '-37')) for paper in selected)
 
 
 def test_overlapping_lanes_fill_budget_with_distinct_canonical_works():
@@ -463,7 +1078,7 @@ def test_retrieval_plan_is_bounded_and_original_question_is_preserved():
     asyncio.run(run())
 
 
-def test_retrieval_caps_three_raw_lanes_and_final_candidate_budget():
+def test_retrieval_caps_four_raw_lanes_and_final_candidate_budget():
     class LLM:
         async def generate_structured(self, **kwargs):
             return {'anchor': 'Research object', 'alternative': 'Research object mechanism',
@@ -481,7 +1096,7 @@ def test_retrieval_caps_three_raw_lanes_and_final_candidate_budget():
     papers = Papers()
     result = asyncio.run(LiteratureRetriever(Settings(_env_file=None), papers, LLM()).retrieve(
         'Research object', 100))
-    assert papers.limits == [40, 40, 40]
+    assert papers.limits == [40, 40, 40, 40]
     assert len(result.papers) <= 40
 
 
@@ -601,3 +1216,43 @@ def test_cancelled_retrieval_cancels_all_network_lanes():
             await task
         assert entered == cancelled
     asyncio.run(run())
+
+
+def test_narrow_mechanism_hits_keep_a_quota_when_broad_synonym_lane_is_full():
+    class Planner:
+        async def generate_structured(self, **kwargs):
+            return {'anchor': 'Research object', 'alternative': 'Research object synonym',
+                    'object_query': 'Research object', 'facets': ['contact loss']}
+
+    class Papers:
+        async def search_papers(self, query, limit=40, **kwargs):
+            if query == '(Research object) AND (contact loss)':
+                return [Paper(id='mechanism', title='Research object contact loss experiment')]
+            lane = 'foundation' if kwargs.get('sort') else 'synonym' if 'synonym' in query else 'original'
+            return [Paper(id=f'{lane}-{i}', title=f'Research object {lane} study {i}') for i in range(40)]
+
+    result = asyncio.run(LiteratureRetriever(Settings(_env_file=None), Papers(), Planner()).retrieve(
+        'Research object outcome', 40, research_question='Separate current and contact loss.'))
+    assert len(result.papers) == 40
+    assert 'mechanism' in {paper.id for paper in result.papers}
+    assert {'original-0', 'foundation-0', 'synonym-0'} <= {paper.id for paper in result.papers}
+
+
+def test_small_foundation_quota_does_not_spend_all_diversity_slots_on_blind_tail_samples():
+    papers = [Paper(id=f'W{i}', title='Research object common method', citation_count=1000-i)
+              for i in range(40)]
+    papers[18] = Paper(id='mechanism', title='Research object contact loss experiment', citation_count=10)
+    chosen = diversify_foundations(papers, {'contact', 'loss'}, 10)
+    assert len(chosen) == 10
+    assert [paper.id for paper in chosen[:8]] == [f'W{i}' for i in range(8)]
+    assert 'mechanism' in {paper.id for paper in chosen}
+    assert any(paper.id in {'W35', 'W37'} for paper in chosen)
+
+
+def test_four_full_recall_lanes_retain_high_rank_methods_at_the_candidate_budget_boundary():
+    lanes = [[Paper(id=f'{lane}-{i}', title=f'Research object {lane} study {i}') for i in range(40)]
+             for lane in ('original', 'foundation', 'synonym', 'mechanism')]
+    selected = merge_lanes(lanes, 40)
+    assert len(selected) == 40
+    assert {f'{lane}-{i}' for lane in ('original', 'foundation', 'synonym', 'mechanism')
+            for i in range(10)} == {paper.id for paper in selected}

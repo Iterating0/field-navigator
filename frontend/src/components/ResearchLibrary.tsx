@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   BookOpen,
   Check,
   ChevronDown,
   Download,
   ExternalLink,
-  RotateCcw,
   Search,
+  RotateCcw,
   Trash2,
   X,
 } from "lucide-react";
@@ -16,6 +17,7 @@ import {
   type SavedPaper,
   type SavedPaperPatch,
 } from "../state/library";
+import { abstractProvenanceLabel } from "../state/provenance";
 import "./library.css";
 
 export interface ResearchLibraryProps {
@@ -27,20 +29,20 @@ export interface ResearchLibraryProps {
   onClose?: () => void;
   /** Optional because the root can retain a pre-clear snapshot for an undo action. */
   onUndoClear?: () => void;
+  /** Optional so the parent can return to the research entry point from an empty library. */
+  onExplore?: () => void;
+  /** Optional because the root can retain the most recently removed paper for an undo action. */
+  onUndoRemove?: () => void;
+  canUndoRemove?: boolean;
 }
 
 type StatusFilter = "all" | "unread" | "read";
 
 const ALL_FIELDS = "__all__";
 
-function paperMeta(item: SavedPaper): string {
-  return [
-    item.paper.year ?? "年份未知",
-    item.paper.journal || "来源未提供",
-    item.paper.authors.length
-      ? item.paper.authors.slice(0, 2).join(", ")
-      : "作者未提供",
-  ].join(" · ");
+function notePreview(value: string): string {
+  const preview = value.replace(/\s+/g, " ").trim();
+  return preview.length > 88 ? `${preview.slice(0, 88)}…` : preview;
 }
 
 export function ResearchLibrary({
@@ -51,7 +53,11 @@ export function ResearchLibrary({
   onExport,
   onClose,
   onUndoClear,
+  onExplore,
+  onUndoRemove,
+  canUndoRemove = false,
 }: ResearchLibraryProps) {
+  const { t, i18n } = useTranslation("workspace");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [field, setField] = useState(ALL_FIELDS);
   const [query, setQuery] = useState("");
@@ -87,6 +93,13 @@ export function ResearchLibrary({
   }, [field, items, query, status]);
 
   const unreadCount = items.filter((item) => item.status === "to-read").length;
+  const hasActiveFilters =
+    Boolean(query.trim()) || status !== "all" || field !== ALL_FIELDS;
+  const resetFilters = () => {
+    setQuery("");
+    setStatus("all");
+    setField(ALL_FIELDS);
+  };
   const handleClear = () => {
     if (!items.length) return;
     if (!confirmClear) {
@@ -97,19 +110,26 @@ export function ResearchLibrary({
     setConfirmClear(false);
     setUndoVisible(Boolean(onUndoClear));
   };
+  const fieldSeparator = i18n.resolvedLanguage?.startsWith("en") ? ", " : "、";
+  const language = i18n.resolvedLanguage === "en" ? "en" : "zh-CN";
+  const summary = t("library.summary", {
+    papers: t("library.papers", { count: items.length }),
+    unread: t("library.unread", { count: unreadCount }),
+  });
 
   return (
-    <section className="research-library" aria-labelledby="research-library-title">
+    <section
+      className="research-library"
+      aria-labelledby="research-library-title"
+    >
       <header className="library-header">
-        <div>
+        <div className="library-header-main">
           <span className="library-eyebrow">
             <BookOpen size={14} />
-            LOCAL READING LIST
+            {t("library.eyebrow")}
           </span>
-          <h1 id="research-library-title">阅读清单</h1>
-          <p>
-            {items.length} 篇论文 · {unreadCount} 篇待读 · 只保存在当前浏览器
-          </p>
+          <h1 id="research-library-title">{t("library.title")}</h1>
+          <p>{summary}</p>
         </div>
         <div className="library-header-actions">
           <button
@@ -118,14 +138,14 @@ export function ResearchLibrary({
             disabled={!items.length}
           >
             <Download size={15} />
-            导出 Markdown
+            {t("library.export")}
           </button>
           {onClose && (
             <button
               className="library-icon-button"
               onClick={onClose}
-              aria-label="关闭阅读清单"
-              title="关闭阅读清单"
+              aria-label={t("library.closeAria")}
+              title={t("library.closeAria")}
             >
               <X size={18} />
             </button>
@@ -133,37 +153,43 @@ export function ResearchLibrary({
         </div>
       </header>
 
-      <div className="library-toolbar">
+      <div
+        className="library-toolbar"
+        role="search"
+        aria-label={t("library.searchRoleAria")}
+      >
         <label className="library-search">
           <Search size={15} />
-          <span className="sr-only">搜索阅读清单</span>
+          <span className="sr-only">{t("library.searchSrOnly")}</span>
           <input
+            type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索论文、领域或推荐理由"
-            aria-label="搜索阅读清单"
+            placeholder={t("library.searchPlaceholder")}
+            aria-label={t("library.searchAria")}
+            autoComplete="off"
           />
         </label>
         <label className="library-filter">
-          <span>状态</span>
+          <span>{t("library.statusLabel")}</span>
           <select
             value={status}
             onChange={(event) => setStatus(event.target.value as StatusFilter)}
-            aria-label="按阅读状态筛选"
+            aria-label={t("library.statusAria")}
           >
-            <option value="all">全部</option>
-            <option value="unread">待读</option>
-            <option value="read">已读</option>
+            <option value="all">{t("library.all")}</option>
+            <option value="unread">{t("library.unread")}</option>
+            <option value="read">{t("library.read")}</option>
           </select>
         </label>
         <label className="library-filter">
-          <span>领域</span>
+          <span>{t("library.fieldLabel")}</span>
           <select
             value={field}
             onChange={(event) => setField(event.target.value)}
-            aria-label="按所属领域筛选"
+            aria-label={t("library.fieldAria")}
           >
-            <option value={ALL_FIELDS}>全部领域</option>
+            <option value={ALL_FIELDS}>{t("library.allFields")}</option>
             {fields.map((name) => (
               <option key={name} value={name}>
                 {name}
@@ -172,6 +198,14 @@ export function ResearchLibrary({
           </select>
         </label>
         <div className="library-toolbar-spacer" />
+        <span className="library-result-count" aria-live="polite">
+          {hasActiveFilters
+            ? t("library.resultCountFiltered", {
+                visibleCount: visible.length,
+                totalCount: items.length,
+              })
+            : t("library.resultCountAll", { count: items.length })}
+        </span>
         <button
           className={`library-button library-clear-button ${confirmClear ? "is-confirming" : ""}`}
           onClick={handleClear}
@@ -179,13 +213,13 @@ export function ResearchLibrary({
           disabled={!items.length}
         >
           <Trash2 size={14} />
-          {confirmClear ? "再次点击确认清空" : "清空"}
+          {confirmClear ? t("library.clearConfirm") : t("library.clear")}
         </button>
       </div>
 
       {undoVisible && onUndoClear && (
         <div className="library-notice" role="status">
-          <span>阅读清单已清空，本地数据仍可撤销。</span>
+          <span>{t("library.clearNotice")}</span>
           <button
             className="library-inline-button"
             onClick={() => {
@@ -194,24 +228,43 @@ export function ResearchLibrary({
             }}
           >
             <RotateCcw size={13} />
-            撤销
+            {t("library.undo")}
+          </button>
+        </div>
+      )}
+      {canUndoRemove && onUndoRemove && (
+        <div className="library-notice library-notice-neutral" role="status">
+          <span>{t("library.removeNotice")}</span>
+          <button className="library-inline-button" onClick={onUndoRemove}>
+            <RotateCcw size={13} />
+            {t("library.undoRemove")}
           </button>
         </div>
       )}
 
       <div className="library-list">
         {visible.length ? (
-          visible.map((item) => {
+          visible.map((item, index) => {
             const url = safeHttpUrl(item.paper.url);
-            const abstract = (item.paper as typeof item.paper & { abstract?: string })
-              .abstract;
+            const abstract = (
+              item.paper as typeof item.paper & { abstract?: string }
+            ).abstract;
+            const noteId = `library-note-${index}-${item.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
             return (
-              <article className={`library-card ${item.status === "read" ? "is-read" : ""}`} key={item.id}>
+              <article
+                className={`library-card ${item.status === "read" ? "is-read" : ""}`}
+                key={item.id}
+              >
                 <div className="library-card-topline">
-                  <span className="library-status-pill">
-                    {item.status === "read" ? "已读" : "待读"}
+                  <span
+                    className="library-status-pill"
+                    data-status={item.status}
+                  >
+                    <span className="library-status-dot" aria-hidden="true" />
+                    {item.status === "read"
+                      ? t("library.readStatus")
+                      : t("library.toReadStatus")}
                   </span>
-                  <span className="library-meta">{paperMeta(item)}</span>
                 </div>
                 <div className="library-title-row">
                   {url ? (
@@ -233,36 +286,88 @@ export function ResearchLibrary({
                     <code className="library-doi">{item.paper.doi}</code>
                   )}
                 </div>
-                {item.fields.length > 0 && (
-                  <details className="library-sources" open={item.fields.length === 1}>
-                    <summary>
-                      所属领域与推荐理由（{item.fields.length}）
-                      <ChevronDown size={14} />
-                    </summary>
-                    <div className="library-source">
-                      <strong>{item.fields.join("、")}</strong>
-                      <span>{item.reason}</span>
-                    </div>
-                  </details>
-                )}
-                {abstract && (
-                  <details className="library-abstract">
-                    <summary>
-                      查看摘要 <ChevronDown size={14} />
-                    </summary>
-                    <p>{abstract}</p>
-                  </details>
-                )}
-                <label className="library-notes">
-                  <span>个人笔记</span>
-                  <textarea
-                    value={item.note}
-                    maxLength={MAX_NOTE_LENGTH}
-                    placeholder="记录你下一步要读什么、想验证什么……"
-                    onChange={(event) => onUpdate(item.id, { note: event.target.value })}
-                  />
-                  <small>{item.note.length}/{MAX_NOTE_LENGTH}</small>
-                </label>
+                <div className="library-paper-meta">
+                  <span className="library-authors">
+                    {item.paper.authors.length
+                      ? item.paper.authors.join(", ")
+                      : t("library.authorsMissing")}
+                  </span>
+                  <span className="library-meta">
+                    {item.paper.year ?? t("library.yearMissing")} ·{" "}
+                    {item.paper.journal || t("library.sourceMissing")}
+                  </span>
+                </div>
+                <details className="library-details">
+                  <summary>
+                    <span className="library-details-summary-main">
+                      <ChevronDown size={14} aria-hidden="true" />
+                      <span>{t("library.details")}</span>
+                    </span>
+                    <span
+                      className={`library-details-summary-state ${item.note ? "has-note" : ""}`}
+                    >
+                      {item.note
+                        ? t("library.hasNote", {
+                            preview: notePreview(item.note),
+                          })
+                        : t("library.detailsEmpty")}
+                    </span>
+                  </summary>
+                  <div className="library-details-body">
+                    {(item.fields.length > 0 || item.reason) && (
+                      <div className="library-source">
+                        <span className="library-source-label">
+                          {t("library.basis")}
+                        </span>
+                        <strong>
+                          {item.fields.length
+                            ? item.fields.join(fieldSeparator)
+                            : t("library.fieldsMissing")}
+                        </strong>
+                        <span>{item.reason || t("library.reasonMissing")}</span>
+                      </div>
+                    )}
+                    {abstract && (
+                      <details className="library-abstract">
+                        <summary>
+                          <span>{t("library.abstract")}</span>
+                          <ChevronDown size={14} aria-hidden="true" />
+                        </summary>
+                        {item.paper.abstract_source_record_id &&
+                          item.paper.abstract_source_record_id !==
+                            item.paper.id && (
+                            <small className="library-source-label">
+                              {abstractProvenanceLabel(item.paper, language)}
+                            </small>
+                          )}
+                        <p>{abstract}</p>
+                      </details>
+                    )}
+                    <label className="library-notes" htmlFor={noteId}>
+                      <span className="library-note-heading">
+                        <span>{t("library.notes")}</span>
+                        <small>
+                          {t("library.noteLength", {
+                            count: item.note.length,
+                            max: MAX_NOTE_LENGTH,
+                          })}
+                        </small>
+                      </span>
+                      <textarea
+                        id={noteId}
+                        value={item.note}
+                        maxLength={MAX_NOTE_LENGTH}
+                        placeholder={t("library.notePlaceholder")}
+                        aria-label={t("library.noteAria", {
+                          title: item.paper.title,
+                        })}
+                        onChange={(event) =>
+                          onUpdate(item.id, { note: event.target.value })
+                        }
+                      />
+                    </label>
+                  </div>
+                </details>
                 <footer className="library-card-actions">
                   <button
                     className={`library-button ${item.status === "read" ? "is-read" : ""}`}
@@ -274,14 +379,19 @@ export function ResearchLibrary({
                     }
                   >
                     <Check size={14} />
-                    {item.status === "read" ? "标为待读" : "标为已读"}
+                    {item.status === "read"
+                      ? t("library.markUnread")
+                      : t("library.markRead")}
                   </button>
                   <button
                     className="library-inline-button library-remove-button"
+                    aria-label={t("library.removeAria", {
+                      title: item.paper.title,
+                    })}
                     onClick={() => onRemove(item.id)}
                   >
                     <Trash2 size={13} />
-                    移除
+                    {t("library.remove")}
                   </button>
                 </footer>
               </article>
@@ -290,12 +400,27 @@ export function ResearchLibrary({
         ) : (
           <div className="library-empty">
             <BookOpen size={28} />
-            <strong>{items.length ? "没有符合筛选条件的论文" : "阅读清单还是空的"}</strong>
+            <strong>
+              {items.length
+                ? t("library.emptyFiltered")
+                : t("library.emptyLibrary")}
+            </strong>
             <p>
               {items.length
-                ? "试试切换领域或阅读状态筛选。"
-                : "在论文详情中点击“加入清单”，保存下一步要读的内容。"}
+                ? t("library.emptyFilteredDescription")
+                : t("library.emptyLibraryDescription")}
             </p>
+            {items.length && hasActiveFilters ? (
+              <button className="library-empty-action" onClick={resetFilters}>
+                <RotateCcw size={14} />
+                {t("library.clearFilters")}
+              </button>
+            ) : onExplore ? (
+              <button className="library-empty-action" onClick={onExplore}>
+                <Search size={14} />
+                {t("library.explore")}
+              </button>
+            ) : null}
           </div>
         )}
       </div>

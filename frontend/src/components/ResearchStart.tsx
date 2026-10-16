@@ -3,13 +3,16 @@ import {
   ArrowUpRight,
   BookOpen,
   Bookmark,
+  ChevronDown,
   Compass,
   GitBranch,
   Play,
-  Sparkles,
+  ShieldCheck,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { SearchBar } from "./SearchBar";
 import type { Mode } from "../types";
+import "./research-start.css";
 
 interface Props {
   query: string;
@@ -25,79 +28,59 @@ interface Props {
   onLibrary: () => void;
 }
 
+const exampleDefinitions = [
+  "condensedMatter",
+  "singleCell",
+  "geneEditing",
+  "ai",
+] as const;
+
 export function ResearchStart(props: Props) {
-  const examples = [
-    "我想入门二维电子气，先读哪些论文？",
-    "KTO 界面超导属于哪些研究方向？",
-    "氧化物界面超导",
-  ];
+  const { t } = useTranslation("workspace");
+  const examples = exampleDefinitions.map((key) => ({
+    key,
+    label: t(`examples.${key}.label`),
+    query: t(`examples.${key}.query`),
+  }));
+  const renderExample = (example: (typeof examples)[number]) => (
+    <button
+      key={example.query}
+      type="button"
+      onClick={() => {
+        props.setQuery(example.query);
+        if (props.mode === "demo") props.setMode("auto");
+        document.querySelector<HTMLInputElement>("#research-query")?.focus();
+      }}
+    >
+      <span className="research-start__example-label">{example.label}</span>
+      <span>{example.query}</span>
+      <ArrowUpRight size={13} aria-hidden="true" />
+    </button>
+  );
+
+  const modeDescription = {
+    label: t(`mode.${props.mode}.label`),
+    description: t(`mode.${props.mode}.description`),
+  };
+
   return (
     <div className="research-start">
-      <div className="start-kicker">
-        <span className="status-dot" /> 从一个问题开始，一步步找到方向
-      </div>
-      <section className="start-hero">
-        <div className="start-copy">
-          <h1>
-            研究的第一步，
-            <br />
-            <em>可以更清晰。</em>
-          </h1>
-          <p>
-            理清一个领域的脉络，找到有来源的论文，
-            <br className="desktop-break" />
-            把“接下来读什么”变成自己的阅读清单。
-          </p>
-          <div className="hero-proof">
-            <BookOpen size={15} /> 论文来源可查 <span /> <GitBranch size={15} />{" "}
-            关系依据可看 <span /> <Bookmark size={15} /> 阅读进度可保存
-          </div>
+      <header className="research-start__intro">
+        <div>
+          <p className="research-start__overline">{t("start.overline")}</p>
+          <h1>{t("start.title")}</h1>
+          <p className="research-start__intro-copy">{t("start.intro")}</p>
         </div>
-        <button
-          className="map-preview"
-          onClick={props.onDemo}
-          aria-label="体验非厄米趋肤效应离线示例"
-        >
-          <div className="preview-caption">
-            <span>
-              <Compass size={14} /> 一张地图，一条阅读路径
-            </span>
-            <ArrowUpRight size={17} />
-          </div>
-          <div className="preview-canvas" aria-hidden="true">
-            <svg viewBox="0 0 440 235" preserveAspectRatio="none">
-              <path d="M90 68 C165 68 150 119 210 119 M90 178 C165 178 150 119 210 119 M210 119 C278 119 281 50 350 50 M210 119 C278 119 281 125 350 125 M210 119 C278 119 281 204 350 204" />
-            </svg>
-            <span className="preview-node preview-pre top">
-              非厄米物理<small>前置概念</small>
-            </span>
-            <span className="preview-node preview-pre bottom">
-              拓扑与能带<small>前置概念</small>
-            </span>
-            <span className="preview-node preview-center">
-              <Compass size={18} /> NHSE<small>示例研究主题</small>
-            </span>
-            <span className="preview-node preview-branch first">
-              研究分支<small>继续探索</small>
-            </span>
-            <span className="preview-node preview-branch second">
-              支持论文<small>查看出处</small>
-            </span>
-            <span className="preview-node preview-branch third">
-              阅读起点<small>保存到清单</small>
-            </span>
-          </div>
-          <div className="preview-footer">
-            <span>示意预览 · 点击打开已核对书目的离线示例</span>
-            <Play size={13} />
-          </div>
-        </button>
-      </section>
-      <section className="start-search" aria-labelledby="start-search-title">
-        <div className="start-search-label">
-          <h2 id="start-search-title">你想弄清楚什么？</h2>
-          <span>领域名称、简称，或一个中文问题</span>
+      </header>
+
+      <section
+        className="research-start__composer"
+        aria-labelledby="start-search-title"
+      >
+        <div className="research-start__section-heading">
+          <h2 id="start-search-title">{t("start.question")}</h2>
         </div>
+
         <SearchBar
           query={props.query}
           setQuery={props.setQuery}
@@ -107,77 +90,218 @@ export function ResearchStart(props: Props) {
           onSearch={props.onSearch}
           variant="hero"
         />
-        <div className="query-examples">
-          <span>试试</span>
-          {examples.map((example) => (
-            <button
-              key={example}
-              onClick={() => {
-                props.setQuery(example);
-                if (props.mode === "demo") props.setMode("auto");
-                document
-                  .querySelector<HTMLInputElement>(
-                    '[aria-label="搜索科研领域"]',
-                  )
-                  ?.focus();
-              }}
-            >
-              {example}
-              <ArrowUpRight size={12} />
-            </button>
-          ))}
+
+        <div
+          className="research-start__mode-note"
+          aria-label={t("start.modeAria")}
+        >
+          <span>
+            <strong>{modeDescription.label}</strong>{" "}
+            {modeDescription.description}
+          </span>
         </div>
-        <p className="start-search-note">
-          中文和模糊问题会先识别可能方向；需要选择时，由你决定探索范围。实时检索会将研究问题发送给论文检索和分析服务。
-        </p>
+
+        <div
+          className="research-start__examples"
+          role="group"
+          aria-label={t("start.examplesAria")}
+        >
+          <span className="research-start__examples-label">
+            {t("start.examplesLabel")}
+          </span>
+          {examples.slice(0, 2).map(renderExample)}
+          <details className="research-start__examples-more">
+            <summary>
+              <span>{t("start.moreExamples")}</span>
+              <ChevronDown size={14} aria-hidden="true" />
+            </summary>
+            <div className="research-start__examples-more-list">
+              {examples.slice(2).map(renderExample)}
+            </div>
+          </details>
+        </div>
+
+        <div className="research-start__disclosure">
+          <span>
+            <ShieldCheck size={14} aria-hidden="true" />
+            {t("start.disclosureExternal")}
+          </span>
+          <span>
+            <Bookmark size={14} aria-hidden="true" />
+            {t("start.disclosureLocal")}
+          </span>
+        </div>
       </section>
-      <section className="start-steps" aria-label="研究工作流程">
-        <article>
-          <span className="step-number">01</span>
-          <div>
-            <h3>把问题变成方向</h3>
-            <p>确认检索范围，再开始探索。减少简称和宽泛问题带来的偏题。</p>
-          </div>
-          <Compass size={21} />
-        </article>
-        <article>
-          <span className="step-number">02</span>
-          <div>
-            <h3>看懂地图，核对依据</h3>
-            <p>在前置知识与研究分支之间导航，直接查看关系对应的论文。</p>
-          </div>
-          <GitBranch size={21} />
-        </article>
-        <article>
-          <span className="step-number">03</span>
-          <div>
-            <h3>带走可以继续的研究</h3>
-            <p>收藏论文、标记已读、留下笔记，导出一份带来源的研究简报。</p>
-          </div>
-          <BookOpen size={21} />
-        </article>
-      </section>
-      <div className="start-bottom">
-        <button className="start-demo" onClick={props.onDemo}>
-          <Play size={14} />
-          <span>先用离线示例体验</span>
-          <small>无需等待外部服务</small>
-          <ArrowRight size={15} />
-        </button>
+
+      <details className="research-start__guide">
+        <summary className="research-start__guide-summary">
+          <span>
+            <span className="research-start__step-label">
+              {t("start.guideLabel")}
+            </span>
+            <strong>{t("start.guideTitle")}</strong>
+          </span>
+          <span className="research-start__guide-toggle">
+            <span className="research-start__guide-closed">
+              {t("start.guideClosed")}
+            </span>
+            <span className="research-start__guide-open">
+              {t("start.guideOpen")}
+            </span>
+            <ChevronDown size={15} aria-hidden="true" />
+          </span>
+        </summary>
+        <div
+          className="research-start__workspace"
+          aria-label={t("start.guideAria")}
+        >
+          <button
+            type="button"
+            className="research-start__map-card"
+            onClick={props.onDemo}
+            aria-label={t("start.demoCardAria")}
+          >
+            <div className="research-start__card-heading">
+              <div>
+                <span className="research-start__step-label">
+                  {t("start.examplePath")}
+                </span>
+                <strong>{t("start.conceptToBranches")}</strong>
+              </div>
+              <span className="research-start__card-status">
+                {t("start.offlineDemoStatus")}
+              </span>
+            </div>
+            <div className="research-start__map-canvas" aria-hidden="true">
+              <svg viewBox="0 0 440 235" preserveAspectRatio="none">
+                <path d="M90 68 C165 68 150 119 210 119 M90 178 C165 178 150 119 210 119 M210 119 C278 119 281 50 350 50 M210 119 C278 119 281 125 350 125 M210 119 C278 119 281 204 350 204" />
+                <circle cx="90" cy="68" r="3" />
+                <circle cx="90" cy="178" r="3" />
+                <circle cx="210" cy="119" r="4" />
+                <circle cx="350" cy="50" r="3" />
+                <circle cx="350" cy="125" r="3" />
+                <circle cx="350" cy="204" r="3" />
+              </svg>
+              <span className="research-start__map-node research-start__map-node--pre top">
+                {t("start.nonHermitianPhysics")}
+                <small>{t("start.prerequisiteConcept")}</small>
+              </span>
+              <span className="research-start__map-node research-start__map-node--pre bottom">
+                {t("start.topologyBands")}
+                <small>{t("start.prerequisiteConcept")}</small>
+              </span>
+              <span className="research-start__map-node research-start__map-node--center">
+                <Compass size={17} aria-hidden="true" /> NHSE
+                <small>{t("start.exampleTopic")}</small>
+              </span>
+              <span className="research-start__map-node research-start__map-node--branch first">
+                {t("start.researchBranch")}
+                <small>{t("start.continueExploring")}</small>
+              </span>
+              <span className="research-start__map-node research-start__map-node--branch second">
+                {t("start.supportingPapers")}
+                <small>{t("start.seeSource")}</small>
+              </span>
+              <span className="research-start__map-node research-start__map-node--branch third">
+                {t("start.readingStart")}
+                <small>{t("start.saveToLibrary")}</small>
+              </span>
+            </div>
+            <div className="research-start__card-footer">
+              <span>{t("start.demoTopic")}</span>
+              <span>
+                {t("start.openOfflineDemo")}{" "}
+                <ArrowUpRight size={14} aria-hidden="true" />
+              </span>
+            </div>
+          </button>
+
+          <aside className="research-start__workflow">
+            <div className="research-start__workflow-heading">
+              <span className="research-start__step-label">
+                {t("start.workflow")}
+              </span>
+              <h2>{t("start.workflowTitle")}</h2>
+              <p>{t("start.workflowIntro")}</p>
+            </div>
+            <ol className="research-start__workflow-list">
+              <li>
+                <span>01</span>
+                <div>
+                  <strong>{t("start.step1Title")}</strong>
+                  <p>{t("start.step1Description")}</p>
+                </div>
+                <Compass size={17} aria-hidden="true" />
+              </li>
+              <li>
+                <span>02</span>
+                <div>
+                  <strong>{t("start.step2Title")}</strong>
+                  <p>{t("start.step2Description")}</p>
+                </div>
+                <GitBranch size={17} aria-hidden="true" />
+              </li>
+              <li>
+                <span>03</span>
+                <div>
+                  <strong>{t("start.step3Title")}</strong>
+                  <p>{t("start.step3Description")}</p>
+                </div>
+                <BookOpen size={17} aria-hidden="true" />
+              </li>
+            </ol>
+            <div className="research-start__workflow-note">
+              <Bookmark size={15} aria-hidden="true" />
+              <span>
+                <strong>{t("start.localRecordTitle")}</strong>
+                <small>{t("start.localRecordDescription")}</small>
+              </span>
+            </div>
+          </aside>
+        </div>
+      </details>
+
+      <div className="research-start__bottom">
+        <div className="research-start__demo-action">
+          <button
+            type="button"
+            className="research-start__demo"
+            onClick={props.onDemo}
+          >
+            <Play size={14} aria-hidden="true" />
+            <span>{t("start.demoAction")}</span>
+            <ArrowRight size={15} aria-hidden="true" />
+          </button>
+          <span>{t("start.demoNote")}</span>
+        </div>
         {props.onContinue && props.previousName ? (
-          <button className="resume-research" onClick={props.onContinue}>
-            <Sparkles size={14} />
-            <span>继续：{props.previousName}</span>
-            <ArrowRight size={15} />
+          <button
+            type="button"
+            className="research-start__secondary-action"
+            onClick={props.onContinue}
+          >
+            <span>
+              {t("start.continuePrevious", { name: props.previousName })}
+            </span>
+            <ArrowRight size={14} aria-hidden="true" />
           </button>
         ) : props.savedCount > 0 ? (
-          <button className="resume-research" onClick={props.onLibrary}>
-            <Bookmark size={14} />
-            查看 {props.savedCount} 篇已收藏论文
-            <ArrowRight size={15} />
+          <button
+            type="button"
+            className="research-start__secondary-action"
+            onClick={props.onLibrary}
+          >
+            <span>
+              {t("start.savedPapers", {
+                count: props.savedCount,
+              })}
+            </span>
+            <ArrowRight size={14} aria-hidden="true" />
           </button>
         ) : (
-          <span className="quiet-note">研究记录与笔记只保存在当前浏览器</span>
+          <span className="research-start__quiet-note">
+            {t("start.quietNote")}
+          </span>
         )}
       </div>
     </div>

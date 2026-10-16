@@ -9,9 +9,54 @@ import {
   exportLibraryMarkdown,
   loadLibrary,
   normalizeLibrary,
+  removeLibraryItem,
+  restoreLibraryItem,
   saveLibrary,
   updateLibraryItem,
 } from "../src/state/library.ts";
+
+test("undo removal restores the original notes, reading state and position", () => {
+  let items = addToLibrary([], core("Original reason"), "Original field");
+  items = updateLibraryItem(items, items[0].id, {
+    note: "Private reading notes",
+    status: "read",
+  });
+  items = addToLibrary(
+    items,
+    core("Other", { id: "W2", doi: "10.1000/other" }),
+    "Other field",
+  );
+  const removed = items[1];
+  assert.ok(removed);
+  const restored = restoreLibraryItem(
+    removeLibraryItem(items, removed.id),
+    removed,
+    1,
+  );
+  assert.deepEqual(restored, items);
+});
+
+test("undo does not overwrite a newly saved copy of the same paper", () => {
+  const removed = addToLibrary([], core("Old reason"), "Old field")[0];
+  let newer = addToLibrary([], core("New reason"), "New field");
+  newer = updateLibraryItem(newer, newer[0].id, { note: "New notes" });
+  assert.strictEqual(restoreLibraryItem(newer, removed), newer);
+  assert.equal(newer[0].note, "New notes");
+});
+
+test("undo at capacity never discards an existing saved paper", () => {
+  const removed = addToLibrary([], core("Removed"), "Field")[0];
+  let full: ReturnType<typeof addToLibrary> = [];
+  for (let i = 0; i < MAX_LIBRARY_ITEMS; i++) {
+    full = addToLibrary(
+      full,
+      core("Existing", { id: `Other-${i}`, doi: `10.1000/other-${i}` }),
+      "Field",
+    );
+  }
+  assert.strictEqual(restoreLibraryItem(full, removed), full);
+  assert.equal(full.length, MAX_LIBRARY_ITEMS);
+});
 
 class MemoryStorage {
   private readonly values = new Map<string, string>();
@@ -50,6 +95,36 @@ function core(fieldReason: string, overrides: Partial<Paper> = {}): CorePaper {
     signals: { relevance: 0.9 },
   };
 }
+
+test("export retains a legacy recommendation without a source field", () => {
+  const items = addToLibrary([], core("A preserved recommendation"), "Field");
+  items[0].fields = [];
+  items[0].reason = "A preserved recommendation";
+  items[0].note = "My reading question";
+
+  const markdown = exportLibraryMarkdown(items);
+  assert.match(markdown, /建议理由：A preserved recommendation/);
+  assert.match(markdown, /My reading question/);
+  assert.doesNotMatch(markdown, /所属领域/);
+});
+
+test("English library export localizes structure but preserves source text and notes", () => {
+  const items = addToLibrary(
+    [],
+    core("中文推荐理由：关注界面机制", {
+      title: "Original paper title",
+    }),
+    "中文领域",
+  );
+  items[0].note = "中文个人笔记与原文摘录";
+  const markdown = exportLibraryMarkdown(items, "en");
+
+  assert.match(markdown, /# Reading list/);
+  assert.match(markdown, /## To read/);
+  assert.match(markdown, /- Recommendation: 中文领域：中文推荐理由/);
+  assert.match(markdown, /中文个人笔记与原文摘录/);
+  assert.doesNotMatch(markdown, /# 阅读清单|## 待读/);
+});
 
 test("the same DOI is deduplicated while source fields and reasons are retained", () => {
   const first = addToLibrary(
@@ -284,7 +359,10 @@ test("a sparse publisher article is protected from a conflicting verified prepri
   assert.equal(merged.length, 1);
   assert.equal(merged[0].paper.title, "Publisher canonical title");
   assert.equal(merged[0].paper.citation_count, 321);
-  assert.equal(merged[0].paper.url, "https://publisher.example/articles/sparse");
+  assert.equal(
+    merged[0].paper.url,
+    "https://publisher.example/articles/sparse",
+  );
   assert.equal(merged[0].paper.work_version, null);
   assert.equal(merged[0].status, "read");
   assert.equal(merged[0].note, "Keep the publisher record for comparison.");

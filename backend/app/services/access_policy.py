@@ -18,6 +18,8 @@ class LiveRequestGate:
     @asynccontextmanager
     async def admit(self, body, explorer,
                     cache_probe: Callable[[], Awaitable[object | None]] | None = None):
+        language = getattr(body, 'language', 'zh-CN')
+        english = language == 'en'
         if body.mode == 'demo' or not (self.budget or self.max_concurrency):
             yield
             return
@@ -25,7 +27,8 @@ class LiveRequestGate:
             if cache_probe is not None:
                 cached = await cache_probe()
             else:
-                key = (explorer.cache_key(body.query, body.mode, getattr(body, 'research_question', None))
+                key = (explorer.cache_key(body.query, body.mode, getattr(body, 'research_question', None),
+                                          getattr(body, 'language', 'zh-CN'))
                        if hasattr(explorer, 'cache_key') else
                        explorer.fingerprint + ':' + body.mode + ':' + normalize_field(body.query))
                 cached = await asyncio.to_thread(explorer.cache.get, key)
@@ -34,9 +37,19 @@ class LiveRequestGate:
                 return
         async with self.lock:
             if self.budget and self.used >= self.budget:
-                raise ProviderError('公开体验的实时分析额度已用完。已有缓存仍可查看，或选择离线演示体验 NHSE 示例。', 429)
+                raise ProviderError(
+                    'The public live-analysis quota is exhausted. Cached results remain available; '
+                    'you can also try the offline NHSE demo.' if english else
+                    '公开体验的实时分析额度已用完。已有缓存仍可查看，或选择离线演示体验 NHSE 示例。',
+                    429,
+                )
             if self.max_concurrency and self.active >= self.max_concurrency:
-                raise ProviderError('实时分析正在处理其他请求，请稍后重试；也可先体验离线演示。', 429)
+                raise ProviderError(
+                    'Another live analysis is in progress. Retry shortly or try the offline demo.'
+                    if english else
+                    '实时分析正在处理其他请求，请稍后重试；也可先体验离线演示。',
+                    429,
+                )
             self.used += 1
             self.active += 1
         try:

@@ -251,6 +251,101 @@ test("distinct original questions do not share a canonical field cache", async (
   assert.equal(calls, 2);
 });
 
+test("Chinese and English canonical fields never share cache or in-flight work", async () => {
+  let calls = 0;
+  const store = new ExplorationRequests(
+    async (name, _, __, ___, ____, researchQuestion, language) => {
+      calls++;
+      return {
+        ...field(name),
+        language,
+        research_question: researchQuestion ?? null,
+      };
+    },
+  );
+  const question = "Which mechanism controls the transition?";
+  const chinese = await store.explore(
+    "Same canonical field",
+    "auto",
+    false,
+    () => {},
+    question,
+    "zh-CN",
+  );
+  const english = await store.explore(
+    "Same canonical field",
+    "auto",
+    false,
+    () => {},
+    question,
+    "en",
+  );
+
+  assert.equal(calls, 2);
+  assert.equal(chinese.language, "zh-CN");
+  assert.equal(english.language, "en");
+  assert.notEqual(
+    requestKey("Same canonical field", "auto", question, "zh-CN"),
+    requestKey("Same canonical field", "auto", question, "en"),
+  );
+  assert.equal(
+    (
+      await store.explore(
+        "Same canonical field",
+        "auto",
+        false,
+        () => {},
+        question,
+        "en",
+      )
+    ).cache_hit,
+    true,
+  );
+  assert.equal(calls, 2);
+});
+
+test("an explicit language mismatch cannot populate the requested cache", async () => {
+  let calls = 0;
+  const store = new ExplorationRequests(async (name) => {
+    calls++;
+    return {
+      ...field(name),
+      language: calls === 1 ? "zh-CN" : "en",
+    };
+  });
+  const key = requestKey("Mismatched field", "auto", undefined, "en");
+  await assert.rejects(
+    store.explore("Mismatched field", "auto", false, () => {}, undefined, "en"),
+    /different language/i,
+  );
+  assert.equal(store.hasPending(key), false);
+
+  const recovered = await store.explore(
+    "Mismatched field",
+    "auto",
+    false,
+    () => {},
+    undefined,
+    "en",
+  );
+  assert.equal(recovered.language, "en");
+  assert.equal(recovered.cache_hit, false);
+  assert.equal(calls, 2);
+  assert.equal(
+    (
+      await store.explore(
+        "Mismatched field",
+        "auto",
+        false,
+        () => {},
+        undefined,
+        "en",
+      )
+    ).cache_hit,
+    true,
+  );
+});
+
 test("a stale goal completion is not eligible to update the current graph", async () => {
   const questionA = "Which interface mechanism raises Tc?";
   const questionB = "How does disorder change the interface phase diagram?";

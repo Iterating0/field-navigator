@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ArrowUpRight,
   Bookmark,
@@ -8,69 +9,287 @@ import {
   ExternalLink,
   FileText,
   Info,
+  LoaderCircle,
 } from "lucide-react";
 import { isSavedPaper, safeHttpUrl } from "../state/library";
-import { abstractProvenanceLabel } from "../state/provenance";
 import type { CorePaper, FieldNode, FieldRelation, Paper } from "../types";
-import "./library.css";
+import "./evidence.css";
+
+type DetailTab = "papers" | "overview";
+type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 function shortText(value: string, limit = 260) {
   const text = value.replace(/\s+/g, " ").trim();
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
-function evidenceStatus(relation: FieldRelation) {
+function evidenceStatus(relation: FieldRelation, t: Translate) {
   if (relation.evidence_status === "supported")
-    return { label: "摘要支持 · 自动核对", className: "supported" };
+    return { label: t("evidence.statusSupported"), className: "supported" };
   if (relation.evidence_status === "weak")
-    return { label: "线索有限", className: "weak" };
-  return { label: "待核对", className: "unverified" };
+    return { label: t("evidence.statusWeak"), className: "weak" };
+  return { label: t("evidence.statusUnverified"), className: "unverified" };
 }
 
-function claimLevel(relation: FieldRelation) {
+function claimLevel(relation: FieldRelation, t: Translate) {
   if (relation.claim_level === "theory_or_proposed")
     return {
-      label: "理论 / 候选解释",
+      label: t("evidence.claimTheory"),
       className: "theory",
-      title:
-        "文献覆盖该研究方向，但这里是理论或候选解释，不代表全文验证或机制定论",
+      title: t("evidence.claimTheoryTitle"),
     };
   if (relation.claim_level === "title_only")
     return {
-      label: "仅题名线索",
+      label: t("evidence.claimTitleOnly"),
       className: "title-only",
-      title: "目前只有题名级线索，不能确认研究方向，更不能确认机制",
+      title: t("evidence.claimTitleOnlyTitle"),
     };
   return {
-    label: "文献覆盖方向",
+    label: t("evidence.claimDirection"),
     className: "direction",
-    title: "有文献覆盖该研究方向；不代表全文验证或机制定论",
+    title: t("evidence.claimDirectionTitle"),
   };
 }
 
-function basisLabel(value: CorePaper["evidence_basis"]) {
-  if (value === "abstract") return "摘要证据";
-  if (value === "title") return "标题线索";
-  return "待核对";
+function basisLabel(value: CorePaper["evidence_basis"], t: Translate) {
+  if (value === "abstract") return t("evidence.quoteAbstract");
+  if (value === "title") return t("evidence.quoteTitle");
+  return t("evidence.statusUnverified");
 }
 
-function roleLabel(value: CorePaper["role"]) {
-  if (value === "primary") return "原始研究";
-  if (value === "review") return "综述导读";
-  if (value === "background") return "背景材料";
-  if (value === "non_research") return "非研究条目";
-  return "角色待核对";
+function roleLabel(value: CorePaper["role"], t: Translate) {
+  if (value === "primary") return t("detail.rolePrimary");
+  if (value === "review") return t("detail.roleReview");
+  if (value === "background") return t("detail.roleBackground");
+  if (value === "non_research") return t("detail.roleNonResearch");
+  return t("detail.roleUnknown");
 }
+
 function safeUrl(url: string | null) {
   return safeHttpUrl(url);
 }
-const signalNames: Record<string, string> = {
-  relevance: "领域相关度",
-  citation: "引用量",
-  age_normalized: "年限归一化",
-  shared_references: "候选集引用",
-  llm_importance: "核心性判断",
+
+const signalKeys: Record<string, string> = {
+  relevance: "detail.signalRelevance",
+  citation: "detail.signalCitation",
+  age_normalized: "detail.signalAge",
+  shared_references: "detail.signalSharedReferences",
+  llm_importance: "detail.signalLlmImportance",
 };
+
+function provenanceLabel(paper: Paper, t: Translate) {
+  try {
+    const record = new URL(paper.abstract_source_record_id ?? "");
+    if (
+      record.hostname === "api.datacite.org" &&
+      record.pathname.startsWith("/dois/")
+    )
+      return t("evidence.provenanceDatacite");
+    if (record.hostname === "arxiv.org" && record.pathname.startsWith("/abs/"))
+      return t("evidence.provenanceArxiv");
+  } catch {
+    // An index alias can identify a version without being a URL.
+  }
+  return t("evidence.provenanceIndependent");
+}
+
+function RelationEvidence({
+  relation,
+  evidenceById,
+  t,
+}: {
+  relation: FieldRelation;
+  evidenceById: Map<string, Paper>;
+  t: Translate;
+}) {
+  const evidence = relation.evidence_paper_ids
+    .map((id) => evidenceById.get(id))
+    .filter((paper): paper is Paper => Boolean(paper));
+  return (
+    <details className="evidence-detail__disclosure">
+      <summary>
+        <span>
+          <BookOpen size={13} aria-hidden="true" />
+          {t("detail.relationSources", {
+            count: relation.evidence_paper_ids.length,
+          })}
+        </span>
+        <ChevronDown size={13} aria-hidden="true" />
+      </summary>
+      <div>
+        {evidence.length ? (
+          evidence.map((paper) => {
+            const url = safeUrl(paper.url);
+            return (
+              <div className="evidence-source" key={paper.id}>
+                {url ? (
+                  <a
+                    className="evidence-source__title"
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {paper.title}
+                    <ArrowUpRight size={12} aria-hidden="true" />
+                  </a>
+                ) : (
+                  <span className="evidence-source__title">{paper.title}</span>
+                )}
+                <small className="evidence-source__meta">
+                  {paper.year ?? t("evidence.yearUnknown")} ·{" "}
+                  {paper.journal || t("evidence.sourceUnavailable")}
+                </small>
+                {relation.evidence_quotes
+                  ?.filter((quote) => quote.paper_id === paper.id)
+                  .slice(0, 2)
+                  .map((quote, index) => (
+                    <p
+                      className="evidence-source__quote"
+                      key={`${paper.id}:relation-quote:${index}`}
+                    >
+                      <span className="evidence-source__quote-label">
+                        {quote.source === "abstract"
+                          ? t("evidence.quoteAbstract")
+                          : t("evidence.quoteTitle")}
+                      </span>
+                      “{quote.quote}”
+                    </p>
+                  ))}
+                {!relation.evidence_quotes?.some(
+                  (quote) => quote.paper_id === paper.id,
+                ) &&
+                  paper.abstract && (
+                    <>
+                      <p className="evidence-source__quote evidence-source__quote--unverified">
+                        <span className="evidence-source__quote-label">
+                          {t("evidence.quoteMetadataAbstract")}
+                        </span>
+                        “{shortText(paper.abstract)}”
+                      </p>
+                      {paper.abstract_source_record_id &&
+                        paper.abstract_source_record_id !== paper.id && (
+                          <small className="evidence-source__provenance">
+                            {provenanceLabel(paper, t)}
+                          </small>
+                        )}
+                    </>
+                  )}
+                {paper.abstract_source_record_id &&
+                  paper.abstract_source_record_id !== paper.id &&
+                  relation.evidence_quotes?.some(
+                    (quote) =>
+                      quote.paper_id === paper.id &&
+                      quote.source === "abstract",
+                  ) && (
+                    <small className="evidence-source__provenance">
+                      {provenanceLabel(paper, t)}
+                    </small>
+                  )}
+              </div>
+            );
+          })
+        ) : (
+          <p>{t("detail.oldCache")}</p>
+        )}
+        <p className="evidence-relation__boundary">
+          {t("evidence.boundary")}
+          {relation.evidence_warnings?.length
+            ? ` ${relation.evidence_warnings.join(" ")}`
+            : ""}
+        </p>
+      </div>
+    </details>
+  );
+}
+
+function OverviewRelations({
+  field,
+  label,
+  items,
+  busy,
+  onExplore,
+  evidenceById,
+  t,
+}: {
+  field: FieldNode;
+  label: string;
+  items: FieldRelation[];
+  busy: boolean;
+  onExplore: (name: string) => void;
+  evidenceById: Map<string, Paper>;
+  t: Translate;
+}) {
+  return (
+    <section className="evidence-overview__section">
+      <h3>
+        {label}
+        <span className="evidence-overview__count">{items.length}</span>
+      </h3>
+      {items.length ? (
+        items.map((relation) => {
+          const status = evidenceStatus(relation, t);
+          const level = claimLevel(relation, t);
+          return (
+            <article className="evidence-relation" key={relation.name}>
+              <button
+                type="button"
+                className="evidence-relation__button"
+                disabled={busy}
+                onClick={() => onExplore(relation.name)}
+                aria-label={t("detail.ariaExploreRelation", {
+                  name: relation.name,
+                })}
+              >
+                <strong className="evidence-relation__title">
+                  <span>
+                    {relation.name}
+                    <span className="evidence-relation__reason">
+                      {relation.reason}
+                    </span>
+                  </span>
+                  <ArrowUpRight size={15} aria-hidden="true" />
+                </strong>
+                <span className="evidence-relation__meta">
+                  <span className="evidence-relation__meta-text">
+                    {field.analysis_source === "mock"
+                      ? t("evidence.relationSourceDemo")
+                      : t("evidence.relationSourceModel")}
+                  </span>
+                  {field.analysis_source !== "mock" && (
+                    <span
+                      className={`evidence-relation__status evidence-relation__status--${status.className}`}
+                      title={t("detail.safeUrlWarning")}
+                    >
+                      {status.label}
+                    </span>
+                  )}
+                  <span
+                    className="evidence-relation__claim"
+                    title={level.title}
+                  >
+                    {level.label}
+                  </span>
+                </span>
+              </button>
+              {relation.evidence_paper_ids.length > 0 && (
+                <RelationEvidence
+                  relation={relation}
+                  evidenceById={evidenceById}
+                  t={t}
+                />
+              )}
+            </article>
+          );
+        })
+      ) : (
+        <p className="evidence-overview__summary">
+          {t("detail.overviewNoRelations")}
+        </p>
+      )}
+    </section>
+  );
+}
+
 export function DetailPanel({
   field,
   onExplore,
@@ -84,411 +303,416 @@ export function DetailPanel({
   onSavePaper?: (core: CorePaper, fieldName: string) => void;
   savedPaperIds?: string[];
 }) {
-  const [tab, setTab] = useState<"papers" | "overview">("papers");
+  const { t, i18n } = useTranslation("results");
+  const [tab, setTab] = useState<DetailTab>("papers");
   useEffect(() => {
-    document.querySelector(".detail-scroll")?.scrollTo(0, 0);
+    document.querySelector(".evidence-detail__scroll")?.scrollTo(0, 0);
   }, [field.id, tab]);
+
   const evidenceById = new Map(
     [
       ...field.core_papers.map((core) => core.paper),
       ...(field.evidence_papers ?? []),
     ].map((paper) => [paper.id, paper]),
   );
-  const evidenceFor = (relation: FieldRelation) =>
-    relation.evidence_paper_ids
-      .map((id) => evidenceById.get(id))
-      .filter((paper): paper is Paper => Boolean(paper));
-  const relations = (label: string, items: FieldRelation[]) => (
-    <section className="overview-section">
-      <h3>
-        {label} <small>{items.length}</small>
-      </h3>
-      {items.length ? (
-        items.map((r) => {
-          const evidence = evidenceFor(r);
-          return (
-            <div key={r.name}>
-              <button
-                className="relation-detail"
-                disabled={busy}
-                onClick={() => onExplore(r.name)}
-              >
-                <strong>
-                  {r.name}
-                  <ArrowUpRight size={15} />
-                </strong>
-                <span>{r.reason}</span>
-                <small>
-                  {field.analysis_source === "mock"
-                    ? "演示置信度"
-                    : "模型置信度"}{" "}
-                  {Math.round(r.confidence * 100)}% ·{" "}
-                  {r.evidence_paper_ids.length} 篇证据论文
-                </small>
-                {field.analysis_source !== "mock" && (
-                  <em
-                    className={`evidence-status ${evidenceStatus(r).className}`}
-                    title="自动核对只说明文献与研究方向相关；不代表全文验证或机制定论"
-                  >
-                    {evidenceStatus(r).label}
-                  </em>
-                )}
-                <span
-                  className={`claim-level-badge ${claimLevel(r).className}`}
-                  title={claimLevel(r).title}
-                >
-                  {claimLevel(r).label}
-                </span>
-              </button>
-              {r.evidence_paper_ids.length > 0 && (
-                <details className="why-core">
-                  <summary>
-                    <span>
-                      <BookOpen size={12} />
-                      查看支持论文（{r.evidence_paper_ids.length}）
-                    </span>
-                    <ChevronDown size={13} />
-                  </summary>
-                  {evidence.length > 0 ? (
-                    evidence.map((paper) => {
-                      const url = safeUrl(paper.url);
-                      return (
-                        <p key={paper.id}>
-                          {url ? (
-                            <a
-                              className="paper-title"
-                              href={url}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              {paper.title}
-                              <ArrowUpRight size={13} />
-                            </a>
-                          ) : (
-                            <span>{paper.title}</span>
-                          )}
-                          <small>
-                            {paper.year ?? "年份未知"} ·{" "}
-                            {paper.journal || "来源未提供"}
-                          </small>
-                          {r.evidence_quotes
-                            ?.filter((quote) => quote.paper_id === paper.id)
-                            .slice(0, 2)
-                            .map((quote, index) => (
-                              <span
-                                className="evidence-quote"
-                                key={`${paper.id}:relation-quote:${index}`}
-                              >
-                                <b>
-                                  {quote.source === "abstract"
-                                    ? "摘要摘录"
-                                    : "标题线索"}
-                                </b>
-                                “{shortText(quote.quote)}”
-                              </span>
-                            ))}
-                          {!r.evidence_quotes?.some(
-                            (quote) => quote.paper_id === paper.id,
-                          ) &&
-                            paper.abstract && (
-                              <>
-                                <span className="evidence-quote evidence-quote-unverified">
-                                  <b>摘要元数据摘录 · 待核对</b>“
-                                  {shortText(paper.abstract)}”
-                                </span>
-                                {paper.abstract_source_record_id &&
-                                  paper.abstract_source_record_id !==
-                                    paper.id && (
-                                    <small className="evidence-provenance-note">
-                                      {abstractProvenanceLabel(paper)}
-                                    </small>
-                                  )}
-                              </>
-                            )}
-                          {paper.abstract_source_record_id &&
-                            paper.abstract_source_record_id !== paper.id &&
-                            r.evidence_quotes?.some(
-                              (quote) =>
-                                quote.paper_id === paper.id &&
-                                quote.source === "abstract",
-                            ) && (
-                              <small className="evidence-provenance-note">
-                                {abstractProvenanceLabel(paper)}
-                              </small>
-                            )}
-                        </p>
-                      );
-                    })
-                  ) : (
-                    <p>
-                      旧缓存只保存了证据 ID；重新分析后可加载论文标题和链接。
-                    </p>
-                  )}
-                  <p className="evidence-boundary">
-                    自动核对只说明标题/摘要与该研究方向相关；没有全文验证，也不等于机制定论。
-                    {r.evidence_warnings?.length
-                      ? ` ${r.evidence_warnings.join(" ")}`
-                      : ""}
-                  </p>
-                </details>
-              )}
-            </div>
-          );
-        })
-      ) : (
-        <p className="muted">当前分析没有给出更多关系。</p>
-      )}
-    </section>
-  );
+  const tabIds: DetailTab[] = ["papers", "overview"];
+  const tabLabels: Record<DetailTab, string> = {
+    papers:
+      field.phase === "complete"
+        ? t("detail.tabPapersComplete")
+        : t("detail.tabPapersInitial"),
+    overview: t("detail.tabOverview"),
+  };
+
+  function moveTab(direction: "next" | "previous" | "first" | "last") {
+    const currentIndex = tabIds.indexOf(tab);
+    const nextIndex =
+      direction === "first"
+        ? 0
+        : direction === "last"
+          ? tabIds.length - 1
+          : direction === "next"
+            ? (currentIndex + 1) % tabIds.length
+            : (currentIndex - 1 + tabIds.length) % tabIds.length;
+    const nextTab = tabIds[nextIndex];
+    setTab(nextTab);
+    document.getElementById(`evidence-tab-${nextTab}`)?.focus();
+  }
+
+  function onTabKeyDown(event: KeyboardEvent<HTMLButtonElement>): void {
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      event.preventDefault();
+      moveTab("next");
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      event.preventDefault();
+      moveTab("previous");
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      moveTab("first");
+    } else if (event.key === "End") {
+      event.preventDefault();
+      moveTab("last");
+    }
+  }
+
   return (
-    <aside className="detail-panel">
-      <div className="detail-top">
-        <span className="eyebrow">
-          <BookOpen size={14} />
-          FIELD NOTES
+    <aside className="evidence-detail">
+      <div className="evidence-detail__top">
+        <span className="evidence-detail__eyebrow">
+          <BookOpen size={14} aria-hidden="true" />
+          {t("detail.eyebrow")}
         </span>
-        <h2>从领域到文献</h2>
-        <p>理解脉络，再选择值得读的论文。</p>
+        <h2>{t("detail.title")}</h2>
+        <p>{t("detail.subtitle")}</p>
       </div>
-      <div className="detail-tabs" role="tablist" aria-label="领域详情">
-        <button
-          role="tab"
-          aria-selected={tab === "papers"}
-          className={tab === "papers" ? "active" : ""}
-          onClick={() => setTab("papers")}
-        >
-          {field.phase === "complete" ? "核心论文" : "初筛论文"}{" "}
-          <span>{field.core_papers.length}</span>
-        </button>
-        <button
-          role="tab"
-          aria-selected={tab === "overview"}
-          className={tab === "overview" ? "active" : ""}
-          onClick={() => setTab("overview")}
-        >
-          领域概览
-        </button>
+      <div
+        className="evidence-detail__tabs"
+        role="tablist"
+        aria-label={t("detail.tabsAria")}
+      >
+        {tabIds.map((tabId) => (
+          <button
+            type="button"
+            key={tabId}
+            id={`evidence-tab-${tabId}`}
+            role="tab"
+            aria-selected={tab === tabId}
+            aria-controls="evidence-tabpanel"
+            tabIndex={tab === tabId ? 0 : -1}
+            className="evidence-detail__tab"
+            onClick={() => setTab(tabId)}
+            onKeyDown={onTabKeyDown}
+          >
+            {tabLabels[tabId]}
+            {tabId === "papers" && (
+              <span className="evidence-detail__tab-count">
+                {field.core_papers.length}
+              </span>
+            )}
+          </button>
+        ))}
       </div>
-      <div className="detail-scroll" role="tabpanel">
+      {tab === "papers" && field.core_papers.length > 1 && (
+        <p className="evidence-detail__scroll-hint">
+          {t("detail.paperScrollHint", { count: field.core_papers.length })}
+        </p>
+      )}
+      <div
+        id="evidence-tabpanel"
+        className="evidence-detail__scroll"
+        role="tabpanel"
+        aria-labelledby={`evidence-tab-${tab}`}
+        tabIndex={0}
+      >
         {tab === "papers" ? (
           <>
-            <div className="reading-caption">
-              <span>
+            <div className="evidence-detail__caption" aria-live="polite">
+              <span className="evidence-detail__caption-label">
                 {field.phase === "complete"
-                  ? "建议阅读入口"
-                  : "模型评价尚未完成"}
+                  ? t("detail.captionRecommended")
+                  : busy
+                    ? t("detail.captionBusy")
+                    : t("detail.captionPending")}
               </span>
-              <span>
-                按综合得分排序 <Info size={12} />
+              <span
+                className="evidence-detail__caption-note"
+                title={t("detail.scoreTitle")}
+              >
+                {t("detail.scoreNote")}
+                <Info size={13} aria-hidden="true" />
               </span>
             </div>
-            {field.core_papers.map((core, index) => {
-              const url = safeUrl(core.paper.url);
-              const abstract = (
-                core.paper as Paper & { abstract?: string | null }
-              ).abstract?.trim();
-              const saved = isSavedPaper(core.paper, savedPaperIds);
-              return (
-                <article
-                  className="paper-card"
-                  key={`${field.id}:${core.paper.id}`}
-                >
-                  <div className="paper-index">
-                    {String(index + 1).padStart(2, "0")}
-                  </div>
-                  <div className="paper-content">
-                    <div className="paper-meta">
-                      <span className="paper-meta-left">
-                        <span>{core.paper.year ?? "年份未知"}</span>
-                        <span
-                          className={`paper-quality-badge ${core.evidence_basis === "abstract" ? "supported" : core.evidence_basis === "title" ? "weak" : "unverified"}`}
-                          title="自动核对只说明文献与研究方向相关；不代表全文验证或机制定论"
-                        >
-                          {basisLabel(core.evidence_basis)}
-                        </span>
-                        {core.role && (
+            {field.core_papers.length ? (
+              field.core_papers.map((core, index) => {
+                const url = safeUrl(core.paper.url);
+                const abstract = (
+                  core.paper as Paper & { abstract?: string | null }
+                ).abstract?.trim();
+                const saved = isSavedPaper(core.paper, savedPaperIds);
+                return (
+                  <article
+                    className="evidence-paper"
+                    key={`${field.id}:${core.paper.id}`}
+                  >
+                    <div className="evidence-paper__index">
+                      {String(index + 1).padStart(2, "0")}
+                    </div>
+                    <div className="evidence-paper__body">
+                      <div className="evidence-paper__meta">
+                        <span className="evidence-paper__meta-left">
+                          <span className="evidence-paper__year">
+                            {core.paper.year ?? t("evidence.yearUnknown")}
+                          </span>
                           <span
-                            className={`paper-role-badge ${core.role === "non_research" ? "warning" : ""}`}
+                            className={`evidence-paper__badge evidence-paper__badge--${core.evidence_basis === "abstract" ? "supported" : core.evidence_basis === "title" ? "weak" : "unverified"}`}
+                            title={t("detail.safeUrlWarning")}
                           >
-                            {roleLabel(core.role)}
+                            {basisLabel(core.evidence_basis, t)}
+                          </span>
+                          {core.role && (
+                            <span
+                              className={`evidence-paper__role ${core.role === "non_research" ? "evidence-paper__role--warning" : ""}`}
+                            >
+                              {roleLabel(core.role, t)}
+                            </span>
+                          )}
+                        </span>
+                        <span
+                          className="evidence-paper__score"
+                          title={t("detail.scoreTitle")}
+                          aria-label={t("detail.scoreAria", {
+                            score: Math.round(core.score * 100),
+                          })}
+                        >
+                          {t("detail.scoreLabel", {
+                            score: Math.round(core.score * 100),
+                          })}
+                        </span>
+                      </div>
+                      <div className="evidence-paper__title-row">
+                        {url ? (
+                          <a
+                            className="evidence-paper__title"
+                            href={url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {core.paper.title}
+                            <ArrowUpRight size={14} aria-hidden="true" />
+                          </a>
+                        ) : (
+                          <span className="evidence-paper__title evidence-paper__title--unavailable">
+                            {core.paper.title}
                           </span>
                         )}
-                      </span>
-                      <span
-                        className="paper-score"
-                        title="候选集内综合得分，不代表客观重要性或概率"
-                      >
-                        {Math.round(core.score * 100)} 分
-                      </span>
-                    </div>
-                    <div className="paper-title-row">
-                      {url ? (
-                        <a
-                          className="paper-title"
-                          href={url}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {core.paper.title}
-                          <ArrowUpRight size={14} />
-                        </a>
-                      ) : (
-                        <span className="paper-title paper-title-unavailable">
-                          {core.paper.title}
-                        </span>
+                        {onSavePaper && (
+                          <button
+                            type="button"
+                            className={`evidence-paper__save ${saved ? "evidence-paper__save--saved" : ""}`}
+                            aria-pressed={saved}
+                            aria-label={
+                              saved
+                                ? t("detail.saveExistingAria", {
+                                    field: field.name,
+                                  })
+                                : t("detail.saveAddAria", {
+                                    title: core.paper.title,
+                                  })
+                            }
+                            title={
+                              saved
+                                ? t("detail.saveExistingTitle")
+                                : t("detail.saveAddTitle")
+                            }
+                            onClick={() => onSavePaper(core, field.name)}
+                          >
+                            {saved ? (
+                              <Check size={14} aria-hidden="true" />
+                            ) : (
+                              <Bookmark size={14} aria-hidden="true" />
+                            )}
+                            {saved ? t("detail.saved") : t("detail.save")}
+                          </button>
+                        )}
+                      </div>
+                      {!url && (
+                        <p className="evidence-paper__link-note">
+                          {t("detail.linkUnavailable")}
+                        </p>
                       )}
-                      {onSavePaper && (
-                        <button
-                          type="button"
-                          className={`paper-save-button ${saved ? "saved" : ""}`}
-                          aria-pressed={saved}
-                          aria-label={
-                            saved
-                              ? `已在阅读清单，可补充${field.name}来源`
-                              : `加入阅读清单：${core.paper.title}`
-                          }
-                          title={
-                            saved
-                              ? "再次点击会合并当前领域的推荐理由"
-                              : "加入阅读清单"
-                          }
-                          onClick={() => onSavePaper(core, field.name)}
-                        >
-                          {saved ? <Check size={14} /> : <Bookmark size={14} />}
-                          {saved ? "已在清单" : "加入清单"}
-                        </button>
+                      <p className="evidence-paper__authors">
+                        {core.paper.authors.slice(0, 2).join(", ")}
+                        {core.paper.authors.length > 2 ? " et al." : ""}
+                      </p>
+                      <p className="evidence-paper__journal">
+                        {core.paper.journal || t("evidence.sourceUnavailable")}
+                        {core.paper.citation_count !== null && (
+                          <>
+                            {" "}
+                            ·{" "}
+                            {t("detail.citationCount", {
+                              count: core.paper.citation_count,
+                            })}
+                          </>
+                        )}
+                      </p>
+                      {abstract && (
+                        <details className="evidence-detail__disclosure">
+                          <summary>
+                            <span>
+                              <BookOpen size={13} aria-hidden="true" />
+                              {t("detail.abstractDisclosure")}
+                            </span>
+                            <ChevronDown size={13} aria-hidden="true" />
+                          </summary>
+                          <p>{shortText(abstract, 360)}</p>
+                        </details>
                       )}
-                    </div>
-                    {!url && (
-                      <p className="paper-link-note">暂无可用来源链接</p>
-                    )}
-                    <p className="authors">
-                      {core.paper.authors.slice(0, 2).join(", ")}
-                      {core.paper.authors.length > 2 ? " et al." : ""}
-                    </p>
-                    <p className="journal">
-                      {core.paper.journal || "来源未提供"}
-                      {core.paper.citation_count !== null && (
+                      {core.evidence_quote && (
                         <>
-                          {" "}
-                          · {core.paper.citation_count.toLocaleString()} 引用
+                          <p className="evidence-paper__quote">
+                            <span className="evidence-paper__quote-label">
+                              {core.evidence_basis === "title"
+                                ? t("evidence.quoteTitle")
+                                : t("evidence.quoteAbstract")}
+                            </span>
+                            “{core.evidence_quote}”
+                          </p>
+                          {core.evidence_basis === "abstract" &&
+                            core.paper.abstract_source_record_id &&
+                            core.paper.abstract_source_record_id !==
+                              core.paper.id && (
+                              <small className="evidence-paper__provenance">
+                                {provenanceLabel(core.paper, t)}
+                              </small>
+                            )}
                         </>
                       )}
-                    </p>
-                    {abstract && (
-                      <details className="why-core paper-abstract">
+                      {!abstract && !core.evidence_quote && (
+                        <p className="evidence-paper__warning">
+                          <span className="evidence-paper__warning-label">
+                            {t("detail.evidenceState")}
+                          </span>
+                          {t("detail.evidenceMissing")}
+                        </p>
+                      )}
+                      {core.role === "non_research" && (
+                        <p className="evidence-paper__warning">
+                          <span className="evidence-paper__warning-label">
+                            {t("detail.entryNote")}
+                          </span>
+                          {t("detail.nonResearch")}
+                        </p>
+                      )}
+                      <details
+                        className="evidence-detail__disclosure evidence-detail__disclosure--reason"
+                        open={index === 0}
+                      >
                         <summary>
                           <span>
-                            <BookOpen size={12} />
-                            查看摘要摘录
+                            <FileText size={13} aria-hidden="true" />
+                            {t("detail.whyRead")}
                           </span>
-                          <ChevronDown size={13} />
+                          <ChevronDown size={13} aria-hidden="true" />
                         </summary>
-                        <p>{shortText(abstract, 360)}</p>
-                      </details>
-                    )}
-                    {core.evidence_quote && (
-                      <>
-                        <p className="paper-evidence-quote">
-                          <b>
-                            {core.evidence_basis === "title"
-                              ? "标题线索"
-                              : "摘要摘录"}
-                          </b>
-                          “{shortText(core.evidence_quote)}”
-                        </p>
-                        {core.evidence_basis === "abstract" &&
-                          core.paper.abstract_source_record_id &&
-                          core.paper.abstract_source_record_id !==
-                            core.paper.id && (
-                            <small className="evidence-provenance-note">
-                              {abstractProvenanceLabel(core.paper)}
-                            </small>
-                          )}
-                      </>
-                    )}
-                    {!abstract && !core.evidence_quote && (
-                      <p className="paper-evidence-warning">
-                        暂无标题/摘要证据，仅作为检索线索，不能确证贡献。
-                      </p>
-                    )}
-                    {core.role === "non_research" && (
-                      <p className="paper-evidence-warning">
-                        该记录被标为非研究条目，仅供定位来源，不计为原始研究证据。
-                      </p>
-                    )}
-                    <details className="why-core" open={index === 0}>
-                      <summary>
-                        <span>
-                          <FileText size={12} />
-                          为什么读这篇
-                        </span>
-                        <ChevronDown size={13} />
-                      </summary>
-                      <p>{core.reason}</p>
-                      <div className="signal-list">
-                        {Object.entries(core.signals).map(([key, value]) => (
-                          <div key={key}>
-                            <span>
-                              {key === "llm_importance" &&
-                              field.analysis_source === "mock"
-                                ? "演示优先级"
-                                : (signalNames[key] ?? key)}
-                            </span>
-                            <meter min="0" max="1" value={value} />
-                            <b>{Math.round(value * 100)}</b>
+                        <div>
+                          <p>{core.reason}</p>
+                          <div className="evidence-paper__signals">
+                            {Object.entries(core.signals).map(
+                              ([key, value]) => (
+                                <div
+                                  className="evidence-paper__signal"
+                                  key={key}
+                                >
+                                  <span>
+                                    {key === "llm_importance" &&
+                                    field.analysis_source === "mock"
+                                      ? t("detail.demoPriority")
+                                      : signalKeys[key]
+                                        ? t(signalKeys[key])
+                                        : t("detail.signalUnknown", { key })}
+                                  </span>
+                                  <meter min="0" max="1" value={value} />
+                                  <b>{Math.round(value * 100)}</b>
+                                </div>
+                              ),
+                            )}
                           </div>
-                        ))}
-                      </div>
-                    </details>
-                  </div>
-                </article>
-              );
-            })}
-            <p className="paper-note">
-              评分用于候选集内比较。领域关系和阅读建议需结合原文判断。
-            </p>
+                        </div>
+                      </details>
+                    </div>
+                  </article>
+                );
+              })
+            ) : (
+              <div className="evidence-detail__empty" role="status">
+                {busy ? (
+                  <LoaderCircle
+                    size={25}
+                    className="evidence-detail__loading-icon"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <BookOpen size={25} aria-hidden="true" />
+                )}
+                <h3>
+                  {busy
+                    ? t("detail.emptyBusyTitle")
+                    : t("detail.emptyNoPapersTitle")}
+                </h3>
+                <p>
+                  {busy
+                    ? t("detail.emptyBusyCopy")
+                    : t("detail.emptyNoPapersCopy")}
+                </p>
+              </div>
+            )}
+            <p className="evidence-detail__note">{t("detail.scoreBoundary")}</p>
           </>
         ) : (
           <>
-            <section className="overview-section">
-              <span className="eyebrow">CURRENT FIELD</span>
+            <section className="evidence-overview__section">
+              <span className="evidence-overview__label">
+                {t("detail.overviewCurrent")}
+              </span>
               <h3>{field.name}</h3>
-              <p>{field.summary}</p>
+              <p className="evidence-overview__summary">{field.summary}</p>
             </section>
-            {relations("前置领域", field.prerequisites)}
-            {relations("研究分支", field.subfields)}
-            <section className="overview-section source-notes">
-              <h3>分析来源</h3>
-              <p>
-                论文：
+            <OverviewRelations
+              field={field}
+              label={t("detail.overviewPrerequisite")}
+              items={field.prerequisites}
+              busy={busy}
+              onExplore={onExplore}
+              evidenceById={evidenceById}
+              t={t}
+            />
+            <OverviewRelations
+              field={field}
+              label={t("detail.overviewSubfield")}
+              items={field.subfields}
+              busy={busy}
+              onExplore={onExplore}
+              evidenceById={evidenceById}
+              t={t}
+            />
+            <section className="evidence-overview__section">
+              <h3>{t("detail.sourceHeading")}</h3>
+              <p className="evidence-overview__source-copy">
+                {t("detail.sourcePapersLabel")}
                 {field.paper_source === "demo"
-                  ? "离线演示书目"
-                  : "OpenAlex 实时检索"}
+                  ? t("detail.sourceDemoPapers")
+                  : t("detail.sourceLivePapers")}
                 <br />
-                拆分：
+                {t("detail.sourceDecompositionLabel")}
                 {field.analysis_source === "pending"
                   ? busy
-                    ? "正在分析"
-                    : "模型分析未完成"
+                    ? t("detail.sourcePendingBusy")
+                    : t("detail.sourcePending")
                   : field.analysis_source === "mock"
-                    ? "预设演示"
-                    : "LLM 结构化分析"}
+                    ? t("detail.sourceDemoAnalysis")
+                    : t("detail.sourceLlmAnalysis")}
                 <br />
-                生成时间：{new Date(field.created_at).toLocaleString("zh-CN")}
+                {t("detail.generatedAt", {
+                  date: new Date(field.created_at).toLocaleString(
+                    i18n.language.startsWith("en") ? "en-US" : "zh-CN",
+                  ),
+                })}
               </p>
-              {field.warnings.map((w) => (
-                <p key={w}>{w}</p>
+              {field.warnings.map((warning) => (
+                <p className="evidence-overview__warning" key={warning}>
+                  {warning}
+                </p>
               ))}
             </section>
           </>
         )}
       </div>
-      <div className="detail-bottom">
-        <ExternalLink size={12} />
+      <div className="evidence-detail__bottom">
+        <ExternalLink size={13} aria-hidden="true" />
         {field.core_papers.some((core) => safeUrl(core.paper.url))
-          ? "点击有来源链接的论文标题，在原文页面继续阅读"
-          : "当前论文没有可用的来源链接"}
+          ? t("detail.footerHasLinks")
+          : t("detail.footerNoLinks")}
       </div>
     </aside>
   );
