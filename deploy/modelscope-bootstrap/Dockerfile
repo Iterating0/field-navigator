@@ -13,7 +13,7 @@ RUN apt-get update \
 # Keep the source pin literal: this image must not silently follow main.
 RUN git init /src \
     && git -C /src remote add origin https://github.com/Iterating0/field-navigator.git \
-    && git -C /src fetch --depth 1 origin fe4fd4f6c22f72133a25dcb97251af4cb1ab4e5c \
+    && git -C /src fetch --depth 1 origin edac902c114f770b3837c6b44bf2e8b38515dfba \
     && git -C /src checkout --detach FETCH_HEAD
 
 WORKDIR /src/frontend
