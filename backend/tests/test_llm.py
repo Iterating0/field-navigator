@@ -179,6 +179,35 @@ def test_auto_falls_back_once_and_remembers_provider_capability(status, error):
     assert requests[1]['model'] == 'test-model'
 
 
+def test_schema_fallback_then_invalid_json_gets_only_one_content_retry():
+    requests = []
+    invalid = r'{"summary":"incomplete"'
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(400, json=UNSUPPORTED_FORMAT)
+        if len(requests) == 2:
+            return raw_completion(invalid)
+        return completion()
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            provider = CompatibleLLMProvider(http, settings())
+            result = await generate(provider)
+            return result, provider
+
+    result, provider = asyncio.run(run())
+    assert result == VALID_ANALYSIS
+    assert provider._schema_unavailable is True
+    assert [request['response_format']['type'] for request in requests] == [
+        'json_schema', 'json_object', 'json_object']
+    assert len(requests) == 3
+    assert requests[1]['messages'][1] == requests[0]['messages'][1]
+    assert requests[2]['messages'][1] == requests[1]['messages'][1]
+    assert requests[2]['messages'][0]['content'].startswith(requests[1]['messages'][0]['content'])
+
+
 @pytest.mark.parametrize('status,error', [
     (400, {'error': {'message': 'Model not found'}}),
     (400, {'error': {'message': 'Invalid schema for response_format: unsupported keyword'}}),
@@ -484,7 +513,7 @@ def test_whole_json_fence_is_unwrapped_but_trailing_commentary_is_rejected():
                 await generate(CompatibleLLMProvider(http, settings()))
 
     asyncio.run(run_trailing())
-    assert len(requests) == 1
+    assert len(requests) == 2
 
 
 def test_raw_newline_inside_json_string_is_escaped_without_loss():
@@ -520,7 +549,35 @@ def test_incomplete_json_is_still_rejected_after_narrow_repair(caplog):
     assert 'Band' not in record.getMessage()
 
 
-def test_invalid_json_does_not_trigger_a_per_content_network_retry():
+def test_invalid_json_gets_one_bounded_retry_and_preserves_the_original_task(caplog):
+    invalid = r'{"summary":"malformed-response-sentinel"'
+    requests = []
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return raw_completion(invalid)
+        return completion()
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            return await generate(CompatibleLLMProvider(http, settings()))
+
+    caplog.set_level(logging.WARNING, logger='app.providers.llm')
+    assert asyncio.run(run()) == VALID_ANALYSIS
+    assert len(requests) == 2
+    assert requests[1]['response_format'] == requests[0]['response_format']
+    assert requests[1]['max_tokens'] == requests[0]['max_tokens']
+    assert requests[1]['messages'][1] == requests[0]['messages'][1]
+    assert requests[1]['messages'][0]['content'].startswith(requests[0]['messages'][0]['content'])
+    assert 'previous response was not valid JSON' in requests[1]['messages'][0]['content']
+    retry_records = [record for record in caplog.records if record.msg.startswith('llm_json_retry')]
+    assert len(retry_records) == 1
+    assert 'count=1' in retry_records[0].getMessage()
+    assert 'malformed-response-sentinel' not in caplog.text
+
+
+def test_invalid_json_does_not_trigger_more_than_one_network_retry():
     content = r'{"summary":"Band \alpha","prerequisites":[],"subfields":[],"paper_judgments":[]'
     requests = []
 
@@ -534,4 +591,7 @@ def test_invalid_json_does_not_trigger_a_per_content_network_retry():
                 await generate(CompatibleLLMProvider(http, settings()))
 
     asyncio.run(run())
-    assert len(requests) == 1
+    assert len(requests) == 2
+    first_request = json.loads(requests[0].content)
+    retry_request = json.loads(requests[1].content)
+    assert retry_request['messages'][1] == first_request['messages'][1]

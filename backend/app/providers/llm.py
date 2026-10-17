@@ -14,6 +14,12 @@ logger = logging.getLogger(__name__)
 _JSON_FENCE_RE = re.compile(r'\A```json\r?\n(?P<body>.*)\r?\n```\Z', re.DOTALL)
 _JSON_SIMPLE_ESCAPES = frozenset('"\\/bfnrt')
 _JSON_HEX_DIGITS = frozenset('0123456789abcdefABCDEF')
+_JSON_RETRY_INSTRUCTION = (
+    '\n\nOutput correction: the previous response was not valid JSON. '
+    'Return exactly one valid JSON object matching the same schema. '
+    'Preserve the original task, evidence constraints, and source IDs; '
+    'do not add evidence, citations, or commentary.'
+)
 
 
 def _unwrap_json_fence(content: str) -> str:
@@ -244,26 +250,57 @@ class CompatibleLLMProvider:
                 body['response_format'] = {'type': 'json_object'}
                 attempts += 1
                 response = await self.client.post(url, headers=headers, json=body, timeout=timeout)
-            response.raise_for_status()
-            data = response.json()
-            usage = data.get('usage') or {}
-            logger.info('llm_complete seconds=%.3f attempts=%d prompt_tokens=%s completion_tokens=%s reasoning_tokens=%s',
-                        time.perf_counter() - started, attempts, usage.get('prompt_tokens'),
-                        usage.get('completion_tokens'),
-                        (usage.get('completion_tokens_details') or {}).get('reasoning_tokens'))
-            choice = data['choices'][0]
-            if choice.get('finish_reason') == 'length':
-                raise ProviderError('模型输出达到长度预算，分析未保存。请减少候选论文、降低思考强度或提高 LLM_MAX_TOKENS。')
-            if choice.get('finish_reason') != 'stop' or choice['message'].get('refusal'):
-                raise ProviderError('模型未完成结构化分析或拒绝了请求。请重试或更换模型。')
-            content = choice['message']['content']
-            try:
-                return _parse_response_json(content)
-            except json.JSONDecodeError as exc:
-                logger.error('llm_json_parse_error type=%s line=%s col=%s len=%s',
-                             type(exc).__name__, exc.lineno, exc.colno,
-                             len(content) if isinstance(content, str) else 0)
-                raise
+
+            last_content: Any = None
+
+            def parse_completion(current_response: httpx.Response) -> dict[str, Any]:
+                """Validate one completion and parse its structured content."""
+                nonlocal last_content
+                current_response.raise_for_status()
+                data = current_response.json()
+                usage = data.get('usage') or {}
+                logger.info('llm_complete seconds=%.3f attempts=%d prompt_tokens=%s completion_tokens=%s reasoning_tokens=%s',
+                            time.perf_counter() - started, attempts, usage.get('prompt_tokens'),
+                            usage.get('completion_tokens'),
+                            (usage.get('completion_tokens_details') or {}).get('reasoning_tokens'))
+                choice = data['choices'][0]
+                if choice.get('finish_reason') == 'length':
+                    raise ProviderError('模型输出达到长度预算，分析未保存。请减少候选论文、降低思考强度或提高 LLM_MAX_TOKENS。')
+                if choice.get('finish_reason') != 'stop' or choice['message'].get('refusal'):
+                    raise ProviderError('模型未完成结构化分析或拒绝了请求。请重试或更换模型。')
+                last_content = choice['message']['content']
+                return _parse_response_json(last_content)
+
+            json_retry_count = 0
+            request_body = body
+            while True:
+                try:
+                    return parse_completion(response)
+                except json.JSONDecodeError as exc:
+                    logger.error('llm_json_parse_error type=%s line=%s col=%s len=%s',
+                                 type(exc).__name__, exc.lineno, exc.colno,
+                                 len(last_content) if isinstance(last_content, str) else 0)
+                    if json_retry_count >= 1:
+                        raise
+                    json_retry_count += 1
+                    retry_body = deepcopy(request_body)
+                    retry_messages = retry_body.get('messages')
+                    if not isinstance(retry_messages, list) or not retry_messages:
+                        raise
+                    first_message = retry_messages[0]
+                    if not isinstance(first_message, dict):
+                        raise
+                    retry_messages[0] = {
+                        **first_message,
+                        'content': str(first_message.get('content', '')) + _JSON_RETRY_INSTRUCTION,
+                    }
+                    logger.warning('llm_json_retry type=%s count=%d seconds=%.3f',
+                                   type(exc).__name__, json_retry_count,
+                                   time.perf_counter() - started)
+                    attempts += 1
+                    request_body = retry_body
+                    response = await self.client.post(url, headers=headers,
+                                                      json=request_body, timeout=timeout)
         except httpx.TimeoutException as exc:
             raise ProviderError('LLM 分析超时，请重试。', 504) from exc
         except httpx.HTTPStatusError as exc:
